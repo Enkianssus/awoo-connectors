@@ -105,6 +105,10 @@ the `app.enkianss.us/connectors/v1/covers/netease/` route in the main download
 Worker. It accepts only a signed NetEase image token plus a numeric picture ID
 and therefore is not an open proxy.
 
+NetEase `3.1.38.205386.1` recognizes rate-limited search responses instead of
+reporting a false empty result, falls back across the compatible search
+endpoints, and compares canonically equivalent Unicode song metadata safely.
+
 CEF compatibility uses two levels. The exact tested build is enabled directly.
 An unknown patch build is tried only when both CEF public API hashes and the
 CEF/Chromium major versions still match; it must then pass the existing host
@@ -116,7 +120,7 @@ hash change is rejected without calling the unknown ABI.
 The three desktop-player connectors use player-scoped versions whose final
 component is the connector revision:
 
-- NetEase `3.1.37.205354` -> connector `3.1.37.205354.9`
+- NetEase `3.1.38.205386` -> connector `3.1.38.205386.1`
 - KuGou `20.1.41.27870` -> connector `20.1.41.1`
 - QQ Music `22.52` -> connector `22.52.1`
 

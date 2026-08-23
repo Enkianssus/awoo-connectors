@@ -18,9 +18,9 @@ internal sealed record NeteaseBridgeInstallResult(
 
 internal static class NeteaseBridgeInstaller
 {
-    private const string SupportedPlayerVersion = "3.1.37.205354";
+    private const string SupportedPlayerVersion = "3.1.38.205386";
     private const string SupportedPlayerSha256 =
-        "8DE6AE8AF8FEFB141FE49135BA4B5ED9FAF0457502470F283304E336A121B360";
+        "2AFBDE657C8C090E6209669E1C24979281F87FFD5C7DAC7A489E1F0E900A1D87";
     private const string SupportedCefSha256 =
         "724B3E35EDB5905540877FA8D7A8583A2503599639D7C79CCEF6FAA8E5A6BC49";
 

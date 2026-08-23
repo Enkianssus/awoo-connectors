@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\..\src\Shared\PlayerContracts.cs"
+             Link="PlayerContracts.cs" />
+    <Compile Include="..\..\src\Netease\NeteaseTrackMatchPolicy.cs"
+             Link="NeteaseTrackMatchPolicy.cs" />
+    <Compile Include="..\..\src\Netease\NeteaseSearchResponsePolicy.cs"
+             Link="NeteaseSearchResponsePolicy.cs" />
+  </ItemGroup>
+</Project>

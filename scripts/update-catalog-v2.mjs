@@ -33,7 +33,7 @@ const supported = {
   netease: {
     name: '网易云音乐',
     playerVersionPolicy: '3.1.*',
-    testedPlayerVersion: '3.1.37.205354',
+    testedPlayerVersion: '3.1.38.205386',
     runtime: 'win-x64',
     versionPattern: /^\d+\.\d+\.\d+\.\d+\.\d+$/
   },

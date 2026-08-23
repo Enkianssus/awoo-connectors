@@ -23,6 +23,14 @@ internal sealed class NeteasePlayerAdapter :
     private readonly object _trackSync = new();
     private readonly object _bridgeSync = new();
     private readonly Dictionary<string, PlayerTrack> _knownTracks = [];
+    private static readonly string[] SearchEndpoints =
+    [
+        "https://music.163.com/api/search/get/web",
+        "https://music.163.com/api/search/get",
+        "https://music.163.com/api/cloudsearch/pc"
+    ];
+    private const int SearchAttemptTimeoutMilliseconds = 5000;
+    private const int SearchOverallTimeoutMilliseconds = 14000;
     private DateTime _playingListWriteTimeUtc;
     private IReadOnlyList<NeteasePlaylistEntry> _playingList = [];
     private Task<NeteaseBridgeInstallResult>? _bridgeInstallTask;
@@ -49,7 +57,7 @@ internal sealed class NeteasePlayerAdapter :
             "Mozilla/5.0 UnifiedPlayerControlPoc/1.0");
         _httpClient.DefaultRequestHeaders.Add(
             "Cookie",
-            "os=pc; appver=3.1.37;");
+            "os=pc; appver=3.1.38;");
         _httpClient.DefaultRequestHeaders.Accept.Add(
             new MediaTypeWithQualityHeaderValue("application/json"));
     }
@@ -58,7 +66,7 @@ internal sealed class NeteasePlayerAdapter :
 
     public string DisplayName => "网易云音乐";
 
-    public string TestedVersion => "3.1.37.205354";
+    public string TestedVersion => "3.1.38.205386";
 
     public PlayerCapabilities Capabilities { get; } = new(
         Search: true,
@@ -208,9 +216,77 @@ internal sealed class NeteasePlayerAdapter :
         string query,
         CancellationToken cancellationToken)
     {
+        using var overallTimeout = CancellationTokenSource
+            .CreateLinkedTokenSource(cancellationToken);
+        overallTimeout.CancelAfter(SearchOverallTimeoutMilliseconds);
+        var errors = new List<string>();
+
+        foreach (var endpoint in SearchEndpoints)
+        {
+            if (overallTimeout.IsCancellationRequested)
+            {
+                break;
+            }
+
+            try
+            {
+                var tracks = await SearchByKeywordEndpointAsync(
+                    endpoint,
+                    query,
+                    overallTimeout.Token).ConfigureAwait(false);
+                if (tracks.Count == 0)
+                {
+                    // code=200 + songs=[] is a real empty result. Do not
+                    // turn it into a series of speculative requests.
+                    return [];
+                }
+
+                foreach (var track in tracks)
+                {
+                    RegisterKnownTrack(track);
+                }
+
+                return tracks;
+            }
+            catch (OperationCanceledException)
+                when (!cancellationToken.IsCancellationRequested)
+            {
+                errors.Add($"{endpoint} 请求超时");
+            }
+            catch (HttpRequestException exception)
+            {
+                errors.Add($"{endpoint}：{exception.Message}");
+            }
+            catch (JsonException exception)
+            {
+                errors.Add($"{endpoint} JSON 无法解析：{exception.Message}");
+            }
+            catch (NeteaseSearchRetryableException exception)
+            {
+                errors.Add($"{endpoint}：{exception.Message}");
+            }
+        }
+
+        var detail = errors.FirstOrDefault(
+            message => !string.IsNullOrWhiteSpace(message));
+        throw new InvalidOperationException(
+            string.IsNullOrWhiteSpace(detail)
+                ? "网易云搜索暂时受限，请稍后重试。"
+                : $"网易云搜索暂时受限，请稍后重试：{detail}");
+    }
+
+    private async Task<IReadOnlyList<PlayerTrack>>
+        SearchByKeywordEndpointAsync(
+            string endpoint,
+            string query,
+            CancellationToken overallCancellationToken)
+    {
+        using var attemptTimeout = CancellationTokenSource
+            .CreateLinkedTokenSource(overallCancellationToken);
+        attemptTimeout.CancelAfter(SearchAttemptTimeoutMilliseconds);
         using var request = new HttpRequestMessage(
             HttpMethod.Post,
-            "https://music.163.com/api/search/get/web");
+            endpoint);
         request.Content = new FormUrlEncodedContent(
         [
             new KeyValuePair<string, string>("s", query),
@@ -223,31 +299,38 @@ internal sealed class NeteasePlayerAdapter :
         using var response = await _httpClient.SendAsync(
             request,
             HttpCompletionOption.ResponseHeadersRead,
-            cancellationToken).ConfigureAwait(false);
-        response.EnsureSuccessStatusCode();
+            attemptTimeout.Token).ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new HttpRequestException(
+                $"HTTP {(int)response.StatusCode}");
+        }
+
         await using var stream = await response.Content.ReadAsStreamAsync(
-            cancellationToken).ConfigureAwait(false);
+            attemptTimeout.Token).ConfigureAwait(false);
         using var document = await JsonDocument.ParseAsync(
             stream,
-            cancellationToken: cancellationToken).ConfigureAwait(false);
+            cancellationToken: attemptTimeout.Token).ConfigureAwait(false);
+        var analysis = NeteaseSearchResponsePolicy.Analyze(
+            document.RootElement);
+        if (analysis.Kind == NeteaseSearchResponseKind.Retryable)
+        {
+            throw new NeteaseSearchRetryableException(analysis.Message);
+        }
 
-        if (document.RootElement.ValueKind != JsonValueKind.Object
-            || !document.RootElement.TryGetProperty("result", out var result)
-            || result.ValueKind != JsonValueKind.Object
-            || !result.TryGetProperty("songs", out var songs)
-            || songs.ValueKind != JsonValueKind.Array)
+        if (analysis.Kind == NeteaseSearchResponseKind.Empty)
         {
             return [];
         }
 
-        var tracks = songs
-            .EnumerateArray()
+        var tracks = analysis.Songs
             .Select(ParseSearchTrack)
             .Where(track => !string.IsNullOrWhiteSpace(track.Id))
             .ToArray();
-        foreach (var track in tracks)
+        if (tracks.Length == 0)
         {
-            RegisterKnownTrack(track);
+            throw new NeteaseSearchRetryableException(
+                "响应 songs 中没有可用歌曲");
         }
 
         return tracks;
@@ -1083,11 +1166,12 @@ internal sealed class NeteasePlayerAdapter :
 
     private static PlayerTrack ParseSearchTrack(JsonElement song)
     {
+        var metadata = NeteaseSearchResponsePolicy.ParseTrack(song);
         return new PlayerTrack(
-            ReadJsonText(song, "id"),
-            ReadJsonText(song, "name"),
-            ReadArtists(song),
-            ReadAlbum(song),
+            metadata.Id,
+            metadata.Title,
+            metadata.Artist,
+            metadata.Album,
             "",
             ReadCover(song));
     }
@@ -1236,22 +1320,13 @@ internal sealed class NeteasePlayerAdapter :
 
     private static string NormalizeTitle(string value)
     {
-        return string.Join(
-            " ",
-            value.Trim()
-                .ToUpperInvariant()
-                .Replace('–', '-')
-                .Replace('—', '-')
-                .Split(
-                    (char[]?)null,
-                    StringSplitOptions.TrimEntries
-                    | StringSplitOptions.RemoveEmptyEntries));
+        return NeteaseTrackMatchPolicy.NormalizeText(value);
     }
 
     private static string NormalizeArtist(string value)
     {
         return string.Concat(
-            value.Normalize(NormalizationForm.FormKC)
+            NeteaseTrackMatchPolicy.NormalizeText(value)
                 .Where(char.IsLetterOrDigit))
             .ToUpperInvariant();
     }
@@ -1260,17 +1335,7 @@ internal sealed class NeteasePlayerAdapter :
         PlayerTrack? actual,
         PlayerTrack expected)
     {
-        if (actual is null)
-        {
-            return false;
-        }
-
-        return !string.IsNullOrWhiteSpace(actual.Id)
-            && actual.Id == expected.Id
-            || (NormalizeTitle(actual.Title) == NormalizeTitle(expected.Title)
-                && (string.IsNullOrWhiteSpace(expected.Artist)
-                    || NormalizeTitle(actual.Artist)
-                    == NormalizeTitle(expected.Artist)));
+        return NeteaseTrackMatchPolicy.TracksMatch(actual, expected);
     }
 
     private static bool HasTrackChanged(
@@ -1295,6 +1360,14 @@ internal sealed class NeteasePlayerAdapter :
 
         return NormalizeTitle(before.DisplayName)
             != NormalizeTitle(after.DisplayName);
+    }
+
+    private sealed class NeteaseSearchRetryableException : Exception
+    {
+        public NeteaseSearchRetryableException(string message)
+            : base(message)
+        {
+        }
     }
 
     private PlayerTrack? ResolveSequentialNext(PlayerTrack? current)
