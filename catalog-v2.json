@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-08-22T15:10:30.134Z",
+  "generatedAt": "2026-08-23T15:48:53.446Z",
   "repository": "Enkianssus/awoo-connectors",
   "publicKeyId": "bilincm-connectors-2026-01",
   "connectors": {
@@ -8,21 +8,21 @@
       "id": "netease",
       "name": "网易云音乐",
       "channel": "stable",
-      "version": "3.1.37.205354.9",
+      "version": "3.1.38.205386.1",
       "protocolVersion": 1,
       "minimumCoreVersion": "1.1.10",
       "playerVersionPolicy": "3.1.*",
-      "testedPlayerVersion": "3.1.37.205354",
-      "publishedAt": "2026-08-22T15:10:30.134Z",
+      "testedPlayerVersion": "3.1.38.205386",
+      "publishedAt": "2026-08-23T15:48:53.446Z",
       "package": {
         "deployment": "framework-dependent",
         "runtime": "win-x64",
         "runtimeChannel": "8.0",
-        "asset": "awoo-connector-netease-3.1.37.205354.9-win-x64-framework-dependent.zip",
-        "size": 6890096,
-        "sha256": "eb8df0629b52be39ddbb5dace3420d8e93a6d19cf5b77bd51dd7ec12211b0890",
-        "signature": "eNtCUIR7wKEYcK0bWnQ0QTzcGOJvn8B1rizat2FrJI7t/C7i6sD2NbyIs8jwj5LDNMi2nQ+UzDoNDGAQ1JdFDw==",
-        "downloadUrl": "https://app.enkianss.us/connectors/v2/download/netease/3.1.37.205354.9/awoo-connector-netease-3.1.37.205354.9-win-x64-framework-dependent.zip"
+        "asset": "awoo-connector-netease-3.1.38.205386.1-win-x64-framework-dependent.zip",
+        "size": 6893678,
+        "sha256": "6cf83940fc93c69f9af4b97717095e2ef26c117ac4a6e57939f9bab5f4f22cfb",
+        "signature": "vF1Zd+RDePv18cazRL3qYuuvLq/Qf4hCFHaT7kZAHpFFe0DjeIXTSddwxNta1bOiLnCjgkvrnpRxKudWr7QZDw==",
+        "downloadUrl": "https://app.enkianss.us/connectors/v2/download/netease/3.1.38.205386.1/awoo-connector-netease-3.1.38.205386.1-win-x64-framework-dependent.zip"
       }
     },
     "kugou": {
