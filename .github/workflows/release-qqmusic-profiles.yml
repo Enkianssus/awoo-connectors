@@ -87,6 +87,85 @@ jobs:
             --title "QQ Music compatibility profiles v${{ steps.metadata.outputs.version }}" `
             --notes "Signed QQ Music compatibility profiles. No player binaries or user data are included."
 
+      - name: Prewarm QQ profile assets in R2
+        shell: pwsh
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.ENKIANSSUS_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: 48a310efe84107a68b7ea095719805bb
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:CLOUDFLARE_API_TOKEN)) {
+            throw 'ENKIANSSUS_CLOUDFLARE_API_TOKEN is required for R2 prewarm.'
+          }
+
+          $wranglerVersion = '4.125.0'
+          $bucket = 'awoo-download-cache'
+          $releasePrefix = "github-release-v1/github.com/Enkianssus/awoo-connectors/releases/download/${{ github.ref_name }}"
+          $cacheControl = 'public, max-age=31536000, immutable'
+          $assetPaths = @(
+            "artifacts/${{ steps.metadata.outputs.asset }}",
+            "artifacts/${{ steps.metadata.outputs.asset }}.sig",
+            "artifacts/${{ steps.metadata.outputs.asset }}.sha256",
+            "artifacts/${{ steps.metadata.outputs.legacy_asset }}",
+            "artifacts/${{ steps.metadata.outputs.legacy_asset }}.sig",
+            "artifacts/${{ steps.metadata.outputs.legacy_asset }}.sha256"
+          )
+
+          foreach ($assetPath in $assetPaths) {
+            $asset = Get-Item -LiteralPath $assetPath
+            $contentType = switch ($asset.Extension.ToLowerInvariant()) {
+              '.zip' { 'application/zip'; break }
+              '.sig' { 'text/plain; charset=utf-8'; break }
+              '.sha256' { 'text/plain; charset=utf-8'; break }
+              default { 'application/octet-stream' }
+            }
+            $objectPath = "$bucket/$releasePrefix/$($asset.Name)"
+            $contentDisposition = 'attachment; filename="' + $asset.Name + '"'
+            $arguments = @(
+              '--yes',
+              "wrangler@$wranglerVersion",
+              'r2',
+              'object',
+              'put',
+              $objectPath,
+              '--remote',
+              '--file',
+              $asset.FullName,
+              '--content-type',
+              $contentType,
+              '--content-disposition',
+              $contentDisposition,
+              '--cache-control',
+              $cacheControl,
+              '--force'
+            )
+            Write-Host "Prewarming R2 object $objectPath"
+            & npx.cmd @arguments
+            if ($LASTEXITCODE -ne 0) {
+              throw "R2 prewarm failed for $($asset.Name) with exit code $LASTEXITCODE"
+            }
+          }
+
+          $tag = '${{ github.ref_name }}'
+          $releasePrefix = "github-release-v1/github.com/Enkianssus/awoo-connectors/releases/download/$tag"
+          $verifyArguments = @(
+            'scripts/cleanup-r2-release-cache.mjs',
+            '--account-id', $env:CLOUDFLARE_ACCOUNT_ID,
+            '--bucket', 'awoo-download-cache',
+            '--repository', 'Enkianssus/awoo-connectors',
+            '--current-tag', $tag,
+            '--tag-prefix', 'qqmusic-profiles-v',
+            '--version-parts', '3',
+            '--dry-run'
+          )
+          foreach ($assetPath in $assetPaths) {
+            $assetName = [System.IO.Path]::GetFileName($assetPath)
+            $verifyArguments += @('--expected-key', "$releasePrefix/$assetName")
+          }
+          & node @verifyArguments
+          if ($LASTEXITCODE -ne 0) {
+            throw "R2 upload verification failed for QQ profile release $tag with exit code $LASTEXITCODE"
+          }
+
       - name: Update profile catalog
         shell: pwsh
         run: |
@@ -107,3 +186,47 @@ jobs:
           git add qqmusic-profile-catalog.json
           git commit -m "Update QQ Music profile catalog"
           git push origin main
+
+      - name: Clean old QQ profile R2 objects
+        shell: pwsh
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.ENKIANSSUS_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: 48a310efe84107a68b7ea095719805bb
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:CLOUDFLARE_API_TOKEN)) {
+            throw 'ENKIANSSUS_CLOUDFLARE_API_TOKEN is required for R2 cleanup.'
+          }
+
+          $tag = '${{ github.ref_name }}'
+          if ($tag -notmatch '^qqmusic-profiles-v\d+\.\d+\.\d+$') {
+            throw "Unsupported QQ profile release tag for R2 cleanup: $tag"
+          }
+          $releasePrefix = "github-release-v1/github.com/Enkianssus/awoo-connectors/releases/download/$tag"
+          $assetPaths = @(
+            "artifacts/${{ steps.metadata.outputs.asset }}",
+            "artifacts/${{ steps.metadata.outputs.asset }}.sig",
+            "artifacts/${{ steps.metadata.outputs.asset }}.sha256",
+            "artifacts/${{ steps.metadata.outputs.legacy_asset }}",
+            "artifacts/${{ steps.metadata.outputs.legacy_asset }}.sig",
+            "artifacts/${{ steps.metadata.outputs.legacy_asset }}.sha256"
+          )
+          $arguments = @(
+            'scripts/cleanup-r2-release-cache.mjs',
+            '--account-id', $env:CLOUDFLARE_ACCOUNT_ID,
+            '--bucket', 'awoo-download-cache',
+            '--repository', 'Enkianssus/awoo-connectors',
+            '--current-tag', $tag,
+            '--tag-prefix', 'qqmusic-profiles-v',
+            '--version-parts', '3'
+          )
+          foreach ($assetPath in $assetPaths) {
+            $assetName = [System.IO.Path]::GetFileName($assetPath)
+            if (-not (Test-Path -LiteralPath $assetPath)) {
+              throw "Expected uploaded release asset is missing: $assetPath"
+            }
+            $arguments += @('--expected-key', "$releasePrefix/$assetName")
+          }
+          & node @arguments
+          if ($LASTEXITCODE -ne 0) {
+            throw "R2 cleanup failed for QQ profile release $tag with exit code $LASTEXITCODE"
+          }

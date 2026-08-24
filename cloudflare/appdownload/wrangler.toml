@@ -5,6 +5,12 @@ compatibility_date = "2026-05-12"
 workers_dev = true
 preview_urls = false
 
+# Durable R2 download cache for prewarmed release assets.
+# Without this binding the Worker safely falls back to GitHub proxying.
+[[r2_buckets]]
+binding = "DOWNLOAD_CACHE"
+bucket_name = "awoo-download-cache"
+
 [[d1_databases]]
 binding = "FEEDBACK_DB"
 database_name = "bilincm-feedback"

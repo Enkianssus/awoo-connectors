@@ -173,6 +173,90 @@ jobs:
             --title "${{ steps.metadata.outputs.id }} connector v${{ steps.metadata.outputs.version }}" `
             --notes "Awoo MusicBot ${{ steps.metadata.outputs.id }} connector v${{ steps.metadata.outputs.version }}. This forward v2 release contains only the signed Awoo framework-dependent package. Existing v1 releases remain available for older cores."
 
+      - name: Prewarm connector assets in R2
+        shell: pwsh
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.ENKIANSSUS_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: 48a310efe84107a68b7ea095719805bb
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:CLOUDFLARE_API_TOKEN)) {
+            throw 'ENKIANSSUS_CLOUDFLARE_API_TOKEN is required for R2 prewarm.'
+          }
+
+          $wranglerVersion = '4.125.0'
+          $bucket = 'awoo-download-cache'
+          $releasePrefix = "github-release-v1/github.com/Enkianssus/awoo-connectors/releases/download/${{ github.ref_name }}"
+          $cacheControl = 'public, max-age=31536000, immutable'
+          $assetPaths = @(
+            "artifacts/${{ steps.metadata.outputs.framework_asset }}",
+            "artifacts/${{ steps.metadata.outputs.framework_asset }}.sig",
+            "artifacts/${{ steps.metadata.outputs.framework_asset }}.sha256"
+          )
+
+          foreach ($assetPath in $assetPaths) {
+            $asset = Get-Item -LiteralPath $assetPath
+            $contentType = switch ($asset.Extension.ToLowerInvariant()) {
+              '.zip' { 'application/zip'; break }
+              '.sig' { 'text/plain; charset=utf-8'; break }
+              '.sha256' { 'text/plain; charset=utf-8'; break }
+              default { 'application/octet-stream' }
+            }
+            $objectPath = "$bucket/$releasePrefix/$($asset.Name)"
+            $contentDisposition = 'attachment; filename="' + $asset.Name + '"'
+            $arguments = @(
+              '--yes',
+              "wrangler@$wranglerVersion",
+              'r2',
+              'object',
+              'put',
+              $objectPath,
+              '--remote',
+              '--file',
+              $asset.FullName,
+              '--content-type',
+              $contentType,
+              '--content-disposition',
+              $contentDisposition,
+              '--cache-control',
+              $cacheControl,
+              '--force'
+            )
+            Write-Host "Prewarming R2 object $objectPath"
+            & npx.cmd @arguments
+            if ($LASTEXITCODE -ne 0) {
+              throw "R2 prewarm failed for $($asset.Name) with exit code $LASTEXITCODE"
+            }
+          }
+
+          $tag = '${{ github.ref_name }}'
+          $connectorId = '${{ steps.metadata.outputs.id }}'
+          $tagPrefix = "$connectorId-v"
+          $versionParts = switch ($connectorId) {
+            'netease' { 5 }
+            'kugou' { 4 }
+            'qqmusic' { 3 }
+            'folia' { 3 }
+          }
+          $releasePrefix = "github-release-v1/github.com/Enkianssus/awoo-connectors/releases/download/$tag"
+          $verifyArguments = @(
+            'scripts/cleanup-r2-release-cache.mjs',
+            '--account-id', $env:CLOUDFLARE_ACCOUNT_ID,
+            '--bucket', 'awoo-download-cache',
+            '--repository', 'Enkianssus/awoo-connectors',
+            '--current-tag', $tag,
+            '--tag-prefix', $tagPrefix,
+            '--version-parts', [string]$versionParts,
+            '--dry-run'
+          )
+          foreach ($assetPath in $assetPaths) {
+            $assetName = [System.IO.Path]::GetFileName($assetPath)
+            $verifyArguments += @('--expected-key', "$releasePrefix/$assetName")
+          }
+          & node @verifyArguments
+          if ($LASTEXITCODE -ne 0) {
+            throw "R2 upload verification failed for connector release $tag with exit code $LASTEXITCODE"
+          }
+
       - name: Update forward v2 catalog
         shell: pwsh
         env:
@@ -194,3 +278,52 @@ jobs:
           git add catalog-v2.json
           git commit -m "Update ${{ steps.metadata.outputs.id }} connector v2 catalog"
           git push origin main
+
+      - name: Clean old connector R2 objects
+        shell: pwsh
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.ENKIANSSUS_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: 48a310efe84107a68b7ea095719805bb
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:CLOUDFLARE_API_TOKEN)) {
+            throw 'ENKIANSSUS_CLOUDFLARE_API_TOKEN is required for R2 cleanup.'
+          }
+
+          $tag = '${{ github.ref_name }}'
+          if ($tag -notmatch '^(netease|kugou|qqmusic|folia)-v(?:\d+\.)+\d+$') {
+            throw "Unsupported connector release tag for R2 cleanup: $tag"
+          }
+          $connectorId = $Matches[1]
+          $tagPrefix = "$connectorId-v"
+          $versionParts = switch ($connectorId) {
+            'netease' { 5 }
+            'kugou' { 4 }
+            'qqmusic' { 3 }
+            'folia' { 3 }
+          }
+          $releasePrefix = "github-release-v1/github.com/Enkianssus/awoo-connectors/releases/download/$tag"
+          $assetPaths = @(
+            "artifacts/${{ steps.metadata.outputs.framework_asset }}",
+            "artifacts/${{ steps.metadata.outputs.framework_asset }}.sig",
+            "artifacts/${{ steps.metadata.outputs.framework_asset }}.sha256"
+          )
+          $arguments = @(
+            'scripts/cleanup-r2-release-cache.mjs',
+            '--account-id', $env:CLOUDFLARE_ACCOUNT_ID,
+            '--bucket', 'awoo-download-cache',
+            '--repository', 'Enkianssus/awoo-connectors',
+            '--current-tag', $tag,
+            '--tag-prefix', $tagPrefix,
+            '--version-parts', [string]$versionParts
+          )
+          foreach ($assetPath in $assetPaths) {
+            $assetName = [System.IO.Path]::GetFileName($assetPath)
+            if (-not (Test-Path -LiteralPath $assetPath)) {
+              throw "Expected uploaded release asset is missing: $assetPath"
+            }
+            $arguments += @('--expected-key', "$releasePrefix/$assetName")
+          }
+          & node @arguments
+          if ($LASTEXITCODE -ne 0) {
+            throw "R2 cleanup failed for connector release $tag with exit code $LASTEXITCODE"
+          }

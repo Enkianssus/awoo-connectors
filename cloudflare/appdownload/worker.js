@@ -51,13 +51,20 @@ const GITHUB_HOSTS = new Set([
   'release-assets.githubusercontent.com',
   'githubreleases.com'
 ]);
+const DOWNLOAD_CACHE_KEY_PREFIX = 'github-release-v1/';
+// Release workflows prewarm large core/connector assets directly into R2.
+// Request-time cloning is deliberately limited to small best-effort objects.
+const DOWNLOAD_CACHE_MAX_BYTES = 32 * 1024 * 1024;
+const DOWNLOAD_CACHE_PUTS = new Map();
 const NETEASE_COVER_PREFIX = '/connectors/v1/covers/netease/';
 const NETEASE_COVER_PATH =
   /^\/connectors\/v1\/covers\/netease\/([A-Za-z0-9_-]{16,64}={0,2})\/([0-9]{1,20})\.jpg$/;
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
+    const proxy = (target, options = {}) =>
+      proxyGitHub(request, target, options, env, ctx);
 
     if (request.method === 'OPTIONS') {
       return new Response(null, {
@@ -126,8 +133,7 @@ export default {
     }
 
     if (url.pathname === '/mods/v1/official/manifest.json') {
-      return proxyGitHub(
-        request,
+      return proxy(
         `https://github.com/${OFFICIAL_OVERLAY_REPO}/releases/latest/download/`
           + OFFICIAL_OVERLAY_DESCRIPTOR,
         {
@@ -139,8 +145,7 @@ export default {
     }
 
     if (url.pathname === '/mods/v1/official/download/awoo-overlay.zip') {
-      return proxyGitHub(
-        request,
+      return proxy(
         `https://github.com/${OFFICIAL_OVERLAY_REPO}/releases/latest/download/`
           + OFFICIAL_OVERLAY_ARCHIVE,
         {
@@ -153,8 +158,7 @@ export default {
     }
 
     if (url.pathname === '/mods/v1/official/preview.png') {
-      return proxyGitHub(
-        request,
+      return proxy(
         `https://raw.githubusercontent.com/${OFFICIAL_OVERLAY_REPO}/main/`
           + 'assets/overlay-preview.png',
         {
@@ -174,8 +178,7 @@ export default {
     }
 
     if (url.pathname === '/mods/v1/retro-cmd/download/awoo-overlay.zip') {
-      return proxyGitHub(
-        request,
+      return proxy(
         `https://github.com/${RETRO_CMD_OVERLAY_REPO}/releases/latest/download/`
           + OFFICIAL_OVERLAY_ARCHIVE,
         {
@@ -188,8 +191,7 @@ export default {
     }
 
     if (url.pathname === '/mods/v1/retro-cmd/preview.png') {
-      return proxyGitHub(
-        request,
+      return proxy(
         `https://raw.githubusercontent.com/${RETRO_CMD_OVERLAY_REPO}/main/`
           + 'assets/overlay-preview.png',
         {
@@ -205,14 +207,14 @@ export default {
     );
     if (retroCmdDownload) {
       const version = retroCmdDownload[1];
-      return proxyGitHub(
-        request,
+      return proxy(
         `https://github.com/${RETRO_CMD_OVERLAY_REPO}/releases/download/`
           + `v${version}/${OFFICIAL_OVERLAY_ARCHIVE}`,
         {
           downloadName: OFFICIAL_OVERLAY_ARCHIVE,
           contentType: 'application/zip',
-          cacheControl: 'public, max-age=31536000, immutable'
+          cacheControl: 'public, max-age=31536000, immutable',
+          r2Cache: true
         }
       );
     }
@@ -238,8 +240,11 @@ export default {
           + `qqmusic-profiles-v${version}/${assetName}`,
         {
           downloadName: assetName,
-          cacheControl: 'public, max-age=31536000, immutable'
-        }
+          cacheControl: 'public, max-age=31536000, immutable',
+          r2Cache: true
+        },
+        env,
+        ctx
       );
     }
 
@@ -263,15 +268,15 @@ export default {
         return jsonResponse({ error: 'Method not allowed.' }, 405);
       }
 
-      return proxyGitHub(
-        request,
+      return proxy(
         `https://github.com/${CONNECTOR_REPO}/releases/download/`
           + `${connectorId}-v${version}/${assetName}`,
         {
           downloadName: assetName,
           contentType: 'application/zip',
           cacheControl: 'public, max-age=31536000, immutable',
-          cacheRevision: 'v2'
+          cacheRevision: 'v2',
+          r2Cache: true
         }
       );
     }
@@ -306,14 +311,14 @@ export default {
         );
       }
 
-      return proxyGitHub(
-        request,
+      return proxy(
         `https://github.com/${CONNECTOR_REPO}/releases/download/`
           + `${connectorId}-v${version}/${assetName}`,
         {
           downloadName: assetName,
           cacheControl: 'public, max-age=31536000, immutable',
-          cacheRevision: '2'
+          cacheRevision: '2',
+          r2Cache: true
         }
       );
     }
@@ -329,7 +334,9 @@ export default {
         request,
         project,
         project.exeName,
-        { downloadName: project.exeName }
+        { downloadName: project.exeName },
+        env,
+        ctx
       );
     }
 
@@ -342,12 +349,12 @@ export default {
         return new Response('项目不存在', { status: 404 });
       }
 
-      return proxyCoreAsset(request, project, coreUpdate[2]);
+      return proxyCoreAsset(request, project, coreUpdate[2], {}, env, ctx);
     }
 
     const genericTarget = parseGenericProxyTarget(request, url);
     if (genericTarget) {
-      return proxyGitHub(request, genericTarget);
+      return proxy(genericTarget);
     }
 
     return htmlResponse(renderHome(url.host));
@@ -1011,7 +1018,7 @@ async function proxyQqMusicProfileCatalog(request) {
   });
 }
 
-async function proxyGitHub(request, target, options = {}) {
+async function proxyGitHub(request, target, options = {}, env, ctx) {
   let targetUrl;
   try {
     targetUrl = new URL(target);
@@ -1022,12 +1029,42 @@ async function proxyGitHub(request, target, options = {}) {
   if (!isAllowedGitHubHost(targetUrl.hostname)) {
     return jsonResponse({ error: 'Access denied.' }, 403);
   }
+  if (
+    options.r2Cache === true
+    && request.method !== 'GET'
+    && request.method !== 'HEAD'
+  ) {
+    return jsonResponse({ error: 'Method not allowed.' }, 405);
+  }
 
   if (options.cacheRevision) {
     targetUrl.searchParams.set(
       'awoo_proxy_cache',
       String(options.cacheRevision)
     );
+  }
+
+  const downloadCache = getDownloadCache(options, env);
+  const downloadCacheKey = downloadCache
+    ? makeDownloadCacheKey(targetUrl)
+    : null;
+  if (
+    downloadCache
+    && (request.method === 'GET' || request.method === 'HEAD')
+  ) {
+    const cachedResponse = await readDownloadCache(
+      request,
+      downloadCache,
+      downloadCacheKey,
+      options
+    );
+    if (cachedResponse) {
+      return cachedResponse;
+    }
+  }
+
+  if (options.redirectReleaseAsset === true) {
+    return Response.redirect(targetUrl.toString(), 302);
   }
 
   const headers = new Headers({
@@ -1043,10 +1080,6 @@ async function proxyGitHub(request, target, options = {}) {
     if (value) {
       headers.set(name, value);
     }
-  }
-
-  if (options.redirectReleaseAsset === true) {
-    return Response.redirect(targetUrl.toString(), 302);
   }
 
   let response;
@@ -1082,7 +1115,292 @@ async function proxyGitHub(request, target, options = {}) {
     );
   }
 
+  if (
+    downloadCache
+    && request.method === 'GET'
+    && response.status === 200
+  ) {
+    scheduleDownloadCachePut(
+      response,
+      downloadCache,
+      downloadCacheKey,
+      options,
+      ctx
+    );
+  }
+
   return copyProxyResponse(response, options);
+}
+
+function getDownloadCache(options, env) {
+  if (options.r2Cache !== true) {
+    return null;
+  }
+  const bucket = env?.DOWNLOAD_CACHE;
+  if (
+    !bucket
+    || typeof bucket.get !== 'function'
+    || typeof bucket.head !== 'function'
+    || typeof bucket.put !== 'function'
+  ) {
+    return null;
+  }
+  return bucket;
+}
+
+function makeDownloadCacheKey(targetUrl) {
+  return DOWNLOAD_CACHE_KEY_PREFIX
+    + targetUrl.hostname
+    + targetUrl.pathname;
+}
+
+function parseSingleByteRange(value, size) {
+  const match = /^bytes=(\d*)-(\d*)$/i.exec(String(value || '').trim());
+  if (!match || (!match[1] && !match[2])) {
+    return null;
+  }
+
+  const startText = match[1];
+  const endText = match[2];
+  if (!Number.isSafeInteger(size) || size < 0) {
+    return null;
+  }
+
+  let start;
+  let end;
+  if (!startText) {
+    const suffixLength = Number(endText);
+    if (!Number.isSafeInteger(suffixLength) || suffixLength <= 0) {
+      return { unsatisfiable: true };
+    }
+    start = Math.max(size - suffixLength, 0);
+    end = size - 1;
+  } else {
+    start = Number(startText);
+    if (!Number.isSafeInteger(start) || start < 0 || start >= size) {
+      return { unsatisfiable: true };
+    }
+    end = endText ? Number(endText) : size - 1;
+    if (!Number.isSafeInteger(end) || end < start) {
+      return { unsatisfiable: true };
+    }
+    end = Math.min(end, size - 1);
+  }
+
+  if (size === 0 || end < start) {
+    return { unsatisfiable: true };
+  }
+  return { start, end, length: end - start + 1 };
+}
+
+async function readDownloadCache(request, bucket, key, options) {
+  const rangeHeader = request.headers.get('Range');
+  const conditional = request.headers.get('If-None-Match')
+    || request.headers.get('If-Modified-Since');
+  const needsHead = request.method === 'HEAD' || Boolean(rangeHeader) || Boolean(conditional);
+
+  try {
+    const head = needsHead ? await bucket.head(key) : null;
+    if (needsHead && !head) {
+      return null;
+    }
+
+    const metadataSource = head;
+    const range = rangeHeader
+      ? parseSingleByteRange(rangeHeader, head?.size)
+      : null;
+    if (rangeHeader && !range) {
+      return null;
+    }
+    if (range?.unsatisfiable) {
+      return cachedRangeNotSatisfiable(head, options);
+    }
+
+    let object;
+    if (request.method === 'HEAD') {
+      object = head;
+    } else if (range) {
+      object = await bucket.get(key, {
+        range: { offset: range.start, length: range.length }
+      });
+    } else {
+      object = await bucket.get(key);
+    }
+    if (!object) {
+      return null;
+    }
+
+    const source = metadataSource || object;
+    const headers = downloadCacheHeaders(source, options, range);
+    if (isDownloadNotModified(request, source)) {
+      return new Response(null, { status: 304, headers });
+    }
+
+    if (range) {
+      headers.set(
+        'Content-Range',
+        `bytes ${range.start}-${range.end}/${source.size}`
+      );
+      headers.set('Content-Length', String(range.length));
+    } else {
+      headers.delete('Content-Range');
+      headers.set('Content-Length', String(source.size));
+    }
+    headers.set('Accept-Ranges', 'bytes');
+
+    return new Response(
+      request.method === 'HEAD' ? null : object.body,
+      {
+        status: range ? 206 : 200,
+        headers
+      }
+    );
+  } catch {
+    // A transient R2 failure must not make the GitHub fallback unavailable.
+    return null;
+  }
+}
+
+function cachedRangeNotSatisfiable(object, options) {
+  const headers = new Headers(corsHeaders());
+  headers.set('Content-Range', `bytes */${object.size}`);
+  headers.set(
+    'Cache-Control',
+    options.responseCacheControl || options.cacheControl || 'no-store'
+  );
+  return new Response(null, { status: 416, headers });
+}
+
+function downloadCacheHeaders(object, options) {
+  const metadata = object.httpMetadata || {};
+  const custom = object.customMetadata || {};
+  const headers = new Headers(corsHeaders());
+  const metadataHeaders = [
+    ['Content-Type', metadata.contentType],
+    ['Content-Language', metadata.contentLanguage],
+    ['Content-Disposition', metadata.contentDisposition],
+    ['Content-Encoding', metadata.contentEncoding],
+    ['Cache-Control', metadata.cacheControl]
+  ];
+  for (const [name, value] of metadataHeaders) {
+    if (value) headers.set(name, value);
+  }
+  if (custom.originEtag || object.httpEtag) {
+    headers.set('ETag', custom.originEtag || object.httpEtag);
+  }
+  const lastModified = getDownloadLastModified(object);
+  if (lastModified) {
+    headers.set('Last-Modified', lastModified);
+  }
+  if (options.downloadName) {
+    headers.set(
+      'Content-Disposition',
+      `attachment; filename="${options.downloadName}"`
+    );
+  }
+  if (options.contentType) {
+    headers.set('Content-Type', options.contentType);
+  }
+  const responseCacheControl =
+    options.responseCacheControl || options.cacheControl;
+  if (responseCacheControl) {
+    headers.set('Cache-Control', responseCacheControl);
+  }
+  headers.set('X-Awoo-Download-Cache', 'HIT');
+  return headers;
+}
+
+function isDownloadNotModified(request, object) {
+  const custom = object.customMetadata || {};
+  const etag = custom.originEtag || object.httpEtag;
+  const ifNoneMatch = request.headers.get('If-None-Match');
+  if (ifNoneMatch && etag) {
+    if (ifNoneMatch.split(',').some(value => {
+      const candidate = value.trim();
+      return candidate === '*' || candidate === etag;
+    })) {
+      return true;
+    }
+  }
+
+  const lastModified = getDownloadLastModified(object);
+  const ifModifiedSince = request.headers.get('If-Modified-Since');
+  if (lastModified && ifModifiedSince) {
+    const modifiedAt = Date.parse(lastModified);
+    const since = Date.parse(ifModifiedSince);
+    if (Number.isFinite(modifiedAt) && Number.isFinite(since) && modifiedAt <= since) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function getDownloadLastModified(object) {
+  const custom = object.customMetadata || {};
+  if (custom.originLastModified) {
+    return custom.originLastModified;
+  }
+  if (!object.uploaded) {
+    return '';
+  }
+  const uploaded = object.uploaded instanceof Date
+    ? object.uploaded
+    : new Date(object.uploaded);
+  return Number.isNaN(uploaded.getTime()) ? '' : uploaded.toUTCString();
+}
+
+function scheduleDownloadCachePut(response, bucket, key, options, ctx) {
+  const contentLength = Number(response.headers.get('Content-Length'));
+  if (
+    !ctx
+    || typeof ctx.waitUntil !== 'function'
+    || !response.body
+    || !Number.isSafeInteger(contentLength)
+    || contentLength < 0
+    || contentLength > DOWNLOAD_CACHE_MAX_BYTES
+  ) {
+    return;
+  }
+  if (DOWNLOAD_CACHE_PUTS.has(key)) {
+    return;
+  }
+
+  const httpMetadata = {};
+  const contentType = options.contentType
+    || response.headers.get('Content-Type');
+  const contentLanguage = response.headers.get('Content-Language');
+  const contentDisposition = options.downloadName
+    ? `attachment; filename="${options.downloadName}"`
+    : response.headers.get('Content-Disposition');
+  const contentEncoding = response.headers.get('Content-Encoding');
+  const cacheControl = options.cacheControl
+    || response.headers.get('Cache-Control');
+  if (contentType) httpMetadata.contentType = contentType;
+  if (contentLanguage) httpMetadata.contentLanguage = contentLanguage;
+  if (contentDisposition) httpMetadata.contentDisposition = contentDisposition;
+  if (contentEncoding) httpMetadata.contentEncoding = contentEncoding;
+  if (cacheControl) httpMetadata.cacheControl = cacheControl;
+
+  const customMetadata = {};
+  const originEtag = response.headers.get('ETag');
+  const originLastModified = response.headers.get('Last-Modified');
+  if (originEtag) customMetadata.originEtag = originEtag;
+  if (originLastModified) customMetadata.originLastModified = originLastModified;
+
+  let cachePromise;
+  try {
+    cachePromise = bucket.put(key, response.clone().body, {
+      httpMetadata,
+      customMetadata
+    });
+  } catch {
+    return;
+  }
+  const trackedPromise = Promise.resolve(cachePromise)
+    .catch(() => {})
+    .finally(() => DOWNLOAD_CACHE_PUTS.delete(key));
+  DOWNLOAD_CACHE_PUTS.set(key, trackedPromise);
+  ctx.waitUntil(trackedPromise);
 }
 
 async function proxyOverlayManifest(request, options) {
@@ -1184,8 +1502,10 @@ function copyProxyResponse(response, options = {}) {
   if (options.contentType) {
     headers.set('Content-Type', options.contentType);
   }
-  if (options.cacheControl && response.ok) {
-    headers.set('Cache-Control', options.cacheControl);
+  const responseCacheControl =
+    options.responseCacheControl || options.cacheControl;
+  if (responseCacheControl && response.ok) {
+    headers.set('Cache-Control', responseCacheControl);
   } else if (!response.ok) {
     headers.set('Cache-Control', 'no-store');
   }
@@ -1223,7 +1543,14 @@ function parseGenericProxyTarget(request, url) {
   }
 }
 
-async function proxyCoreAsset(request, project, assetName, options = {}) {
+async function proxyCoreAsset(
+  request,
+  project,
+  assetName,
+  options = {},
+  env,
+  ctx
+) {
   if (
     !assetName
     || assetName.includes('/')
@@ -1252,8 +1579,12 @@ async function proxyCoreAsset(request, project, assetName, options = {}) {
       + `${encodeURIComponent(tag)}/${encodeURIComponent(assetName)}`,
     {
       ...options,
+      r2Cache: true,
+      responseCacheControl: 'public, max-age=300',
       redirectReleaseAsset: /\.nupkg$/i.test(assetName)
-    }
+    },
+    env,
+    ctx
   );
 }
 
@@ -1396,7 +1727,7 @@ function corsHeaders() {
     'Access-Control-Allow-Headers':
       'Range, If-None-Match, If-Modified-Since, Content-Type, Authorization',
     'Access-Control-Expose-Headers':
-      'Content-Length, Content-Range, ETag, Last-Modified'
+      'Content-Length, Content-Range, ETag, Last-Modified, X-Awoo-Download-Cache'
   };
 }
 
