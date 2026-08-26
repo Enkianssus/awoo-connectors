@@ -38,6 +38,7 @@ internal sealed class QQMusicPlayerAdapter :
     private string _lastObservedPlaybackKey = string.Empty;
     private long _observedTrackSequence;
     private int? _nativeSessionProcessId;
+    private bool _sessionObservedPlaying;
     private int _snapshotSuppressionDepth;
     private int _disposing;
     private int _cachedVersionProcessId;
@@ -113,6 +114,7 @@ internal sealed class QQMusicPlayerAdapter :
                         mediaTrack.Artist)
                     ?? mediaTrack;
             }
+            _ = EvaluatePlaybackAnchor(state);
             if (current is not null
                 && string.IsNullOrWhiteSpace(current.CoverUrl))
             {
@@ -256,6 +258,16 @@ internal sealed class QQMusicPlayerAdapter :
         var stopwatch = Stopwatch.StartNew();
         try
         {
+            if (command is PlayerCommand.InsertNext
+                or PlayerCommand.ArmNextGuard
+                or PlayerCommand.PlaySelected)
+            {
+                // Direct commands can arrive before the snapshot event pump has
+                // initialized GSMTC. Start it here so an existing Playing
+                // timeline can establish the QQ playback anchor.
+                await _eventMonitor.EnsureStartedAsync()
+                    .ConfigureAwait(false);
+            }
             var before = await ProbeAsync(cancellationToken).ConfigureAwait(false);
             if (!before.Connected)
             {
@@ -758,6 +770,10 @@ internal sealed class QQMusicPlayerAdapter :
 
         var guardResult =
             ArmSoftwareNext(before, track, cancellationToken);
+        if (!guardResult.IsSuccess)
+        {
+            return guardResult;
+        }
         var payload = ParsePayload(track);
         if (!payload.IsPlayable)
         {
@@ -841,15 +857,23 @@ internal sealed class QQMusicPlayerAdapter :
         }
 
         var currentState = QQMusicNativeController.ReadPlaybackState();
+        var anchor = EvaluatePlaybackAnchor(currentState);
+        if (!anchor.IsReliable)
+        {
+            return new PlayerOperationResult(
+                OperationOutcome.Rejected,
+                anchor.Message ?? QQMusicPlaybackAnchorPolicy.MissingMessage,
+                before,
+                anchor.FailureCode);
+        }
         var currentKey = BuildPlaybackKey(currentState);
-        if (string.IsNullOrWhiteSpace(currentKey)
-            || currentState.WindowHandle is null
-            || string.IsNullOrWhiteSpace(currentState.WindowTitle))
+        if (string.IsNullOrWhiteSpace(currentKey))
         {
             return new PlayerOperationResult(
                 OperationOutcome.Rejected,
                 "当前 QQ 窗口标题没有可识别歌曲，无法可靠监测下一次切歌。",
-                before);
+                before,
+                QQMusicPlaybackAnchorPolicy.MissingFailureCode);
         }
 
         var pendingCancellation =
@@ -873,7 +897,7 @@ internal sealed class QQMusicPlayerAdapter :
             var task = Task.Run(
                 () => MonitorSoftwareNextEventsAsync(
                     pendingCancellation,
-                    currentState.WindowTitle,
+                    currentState.WindowTitle!,
                     currentKey,
                     track,
                     payload));
@@ -1415,6 +1439,36 @@ internal sealed class QQMusicPlayerAdapter :
         return $"{Normalize(track.Title)}|{Normalize(track.Artist)}";
     }
 
+    private QQMusicPlaybackAnchorDecision EvaluatePlaybackAnchor(
+        QQMusicPlaybackState state)
+    {
+        var processId = state.WindowHandle is null
+            ? null
+            : FindProcessId(state.WindowHandle.Value);
+        ObserveNativeSession(processId);
+        var timeline = _eventMonitor.ReadTimelineSnapshot();
+        var evidence = timeline is null
+            ? null
+            : new QQMusicTimelineEvidence(
+                timeline.PlaybackStatus,
+                timeline.StartTime,
+                timeline.EndTime,
+                timeline.ReportedPosition);
+        lock (_nativeNextSync)
+        {
+            var decision = QQMusicPlaybackAnchorPolicy.Evaluate(
+                state,
+                evidence,
+                _sessionObservedPlaying);
+            if (decision.ObservedPlaying)
+            {
+                _sessionObservedPlaying = true;
+            }
+
+            return decision;
+        }
+    }
+
     private void SetSoftwareNextStatus(
         CancellationTokenSource owner,
         string status)
@@ -1661,6 +1715,32 @@ internal sealed class QQMusicPlayerAdapter :
             .ConfigureAwait(false);
         try
         {
+            var currentState = QQMusicNativeController.ReadPlaybackState();
+            var anchor = EvaluatePlaybackAnchor(currentState);
+            if (!anchor.IsReliable)
+            {
+                return new NativeNextEnsureResult(
+                    false,
+                    false,
+                    false,
+                    "QQPlaybackAnchorMissing",
+                    anchor.Message,
+                    anchor.FailureCode);
+            }
+            var anchorProcessId = currentState.WindowHandle is null
+                ? null
+                : FindProcessId(currentState.WindowHandle.Value);
+            if (anchorProcessId is null)
+            {
+                return new NativeNextEnsureResult(
+                    false,
+                    false,
+                    false,
+                    "QQPlaybackAnchorMissing",
+                    QQMusicPlaybackAnchorPolicy.MissingMessage,
+                    QQMusicPlaybackAnchorPolicy.MissingFailureCode);
+            }
+
             long insertedAtSequence;
             int? nativeSessionProcessId;
             lock (_nativeNextSync)
@@ -1692,6 +1772,7 @@ internal sealed class QQMusicPlayerAdapter :
                     new QQMusicSongReference(
                         payload.SongId,
                         payload.SongType),
+                    anchorProcessId.Value,
                     TimeSpan.FromSeconds(6))
                 .ConfigureAwait(false);
             var verified = IsNativeInsertAccepted(result, payload.SongId);
@@ -1805,6 +1886,7 @@ internal sealed class QQMusicPlayerAdapter :
             _pendingNativeNext.Clear();
             _lastObservedPlaybackKey = string.Empty;
             _observedTrackSequence = 0;
+            _sessionObservedPlaying = false;
         }
     }
 

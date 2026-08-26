@@ -138,4 +138,78 @@ if (!QQMusicTrackMatchPolicy.MetadataRepresentsSameSong(
         "QQ instrumental alias matching checks failed.");
 }
 
+static QQMusicPlaybackState PlaybackState(
+    bool isRunning,
+    string? title,
+    string? windowTitle = null) =>
+    new(
+        isRunning,
+        title,
+        title is null ? null : "Artist",
+        isRunning ? 101L : null,
+        windowTitle ?? (title is null ? "QQ音乐" : $"{title} - Artist"),
+        DateTimeOffset.UtcNow);
+
+static QQMusicTimelineEvidence Timeline(
+    string status) =>
+    new(
+        status,
+        TimeSpan.Zero,
+        TimeSpan.FromMinutes(4),
+        TimeSpan.FromSeconds(30));
+
+var freshLaunch = QQMusicPlaybackAnchorPolicy.Evaluate(
+    PlaybackState(true, null),
+    Timeline("Paused"),
+    sessionObservedPlaying: false);
+if (freshLaunch.IsReliable
+    || freshLaunch.FailureCode
+        != QQMusicPlaybackAnchorPolicy.MissingFailureCode)
+{
+    throw new InvalidOperationException(
+        "A fresh QQ launch must not treat a stale paused timeline as an anchor.");
+}
+
+var captionOnly = QQMusicPlaybackAnchorPolicy.Evaluate(
+    PlaybackState(true, "Song"),
+    null,
+    sessionObservedPlaying: false);
+if (captionOnly.IsReliable
+    || captionOnly.FailureCode
+        != QQMusicPlaybackAnchorPolicy.MissingFailureCode)
+{
+    throw new InvalidOperationException(
+        "A parsed QQ caption alone must not establish the playback anchor.");
+}
+
+var playing = QQMusicPlaybackAnchorPolicy.Evaluate(
+    PlaybackState(true, "Song"),
+    Timeline("Playing"),
+    sessionObservedPlaying: false);
+if (!playing.IsReliable || !playing.ObservedPlaying)
+{
+    throw new InvalidOperationException(
+        "A credible Playing timeline must establish the playback anchor.");
+}
+
+var pausedAfterPlaying = QQMusicPlaybackAnchorPolicy.Evaluate(
+    PlaybackState(true, "Song"),
+    Timeline("Paused"),
+    sessionObservedPlaying: true);
+if (!pausedAfterPlaying.IsReliable)
+{
+    throw new InvalidOperationException(
+        "A paused QQ track must remain insertable after this session observed Playing.");
+}
+
+var disconnected = QQMusicPlaybackAnchorPolicy.Evaluate(
+    PlaybackState(false, null),
+    null,
+    sessionObservedPlaying: false);
+if (disconnected.IsReliable || disconnected.FailureCode is not null)
+{
+    throw new InvalidOperationException(
+        "A disconnected QQ process must not be reported as a missing playback anchor.");
+}
+
 Console.WriteLine("QQ Music metadata policy tests passed.");

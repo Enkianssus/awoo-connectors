@@ -16,5 +16,9 @@
              Link="QQMusicWindowTitleParser.cs" />
     <Compile Include="..\..\src\QQMusic\QQMusicTrackMatchPolicy.cs"
              Link="QQMusicTrackMatchPolicy.cs" />
+    <Compile Include="..\..\src\QQMusic\QQMusicNativeController.cs"
+             Link="QQMusicNativeController.cs" />
+    <Compile Include="..\..\src\QQMusic\QQMusicPlaybackAnchorPolicy.cs"
+             Link="QQMusicPlaybackAnchorPolicy.cs" />
   </ItemGroup>
 </Project>

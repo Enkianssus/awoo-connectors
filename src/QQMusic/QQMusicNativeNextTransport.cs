@@ -76,6 +76,7 @@ internal static class QQMusicNativeNextTransport
 
     public static async Task<QQMusicNativeNextResult> InsertAsync(
         QQMusicSongReference song,
+        int anchorProcessId,
         TimeSpan? responseWindow = null)
     {
         if (song.SongId is <= 0 or > uint.MaxValue)
@@ -91,6 +92,7 @@ internal static class QQMusicNativeNextTransport
             return await Task.Run(
                     () => Insert(
                         song,
+                        anchorProcessId,
                         responseWindow ?? TimeSpan.FromSeconds(8)))
                 .ConfigureAwait(false);
         }
@@ -102,6 +104,7 @@ internal static class QQMusicNativeNextTransport
 
     private static QQMusicNativeNextResult Insert(
         QQMusicSongReference song,
+        int anchorProcessId,
         TimeSpan responseWindow)
     {
         var stopwatch = Stopwatch.StartNew();
@@ -162,15 +165,35 @@ internal static class QQMusicNativeNextTransport
                     "另一个原生下一首播放操作仍在进行。");
             }
 
-            if (!before.IsRunning
+            if (anchorProcessId <= 0
+                || !before.IsRunning
+                || before.WindowHandle is null
+                || string.IsNullOrWhiteSpace(before.WindowTitle)
                 || string.IsNullOrWhiteSpace(before.Title))
             {
-                throw new InvalidOperationException(
-                    "没有读取到正在播放的 QQ 音乐歌曲。");
+                throw new QQMusicPlaybackAnchorMissingException(
+                    QQMusicPlaybackAnchorPolicy.MissingMessage);
+            }
+
+            _ = GetWindowThreadProcessId(
+                (nint)before.WindowHandle.Value,
+                out var observedProcessId);
+            if (observedProcessId == 0
+                || observedProcessId != (uint)anchorProcessId)
+            {
+                throw new QQMusicPlaybackAnchorMissingException(
+                    "QQ 音乐进程在插入前发生变化，尚未重新确认当前播放位置。"
+                    + " 请稍后重试点歌。");
             }
 
             target = FindTarget();
             targetProcessId = target.Process.Id;
+            if (targetProcessId != anchorProcessId)
+            {
+                throw new QQMusicPlaybackAnchorMissingException(
+                    "QQ 音乐进程在插入前发生变化，尚未重新确认当前播放位置。"
+                    + " 请稍后重试点歌。");
+            }
             modulePath = target.ClientModulePath;
             var analysis = QQMusicNativeNextAnalyzer.AnalyzeFiles(
                 target.ClientModulePath,
@@ -957,9 +980,20 @@ internal static class QQMusicNativeNextTransport
     }
 
     private static string? ClassifyFailure(Exception exception) =>
-        exception is Win32Exception { NativeErrorCode: 5 }
-            ? ProcessAccessDeniedFailureCode
-            : null;
+        exception is QQMusicPlaybackAnchorMissingException
+            ? QQMusicPlaybackAnchorPolicy.MissingFailureCode
+            : exception is Win32Exception { NativeErrorCode: 5 }
+                ? ProcessAccessDeniedFailureCode
+                : null;
+
+    private sealed class QQMusicPlaybackAnchorMissingException :
+        InvalidOperationException
+    {
+        public QQMusicPlaybackAnchorMissingException(string message)
+            : base(message)
+        {
+        }
+    }
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern SafeProcessHandle OpenProcess(
@@ -1019,6 +1053,11 @@ internal static class QQMusicNativeNextTransport
 
     [DllImport("user32.dll")]
     private static extern nint GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(
+        nint window,
+        out uint processId);
 
     private sealed record TargetModules(
         Process Process,
