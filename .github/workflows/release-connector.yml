@@ -137,9 +137,33 @@ jobs:
             throw 'Framework-dependent publish did not contain its apphost and managed entry assembly.'
           }
 
+      - name: Set up .NET x86 for connector smoke test
+        if: steps.metadata.outputs.runtime == 'win-x86'
+        uses: actions/setup-dotnet@v5
+        env:
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet-x86
+        with:
+          dotnet-version: '8.0.x'
+          architecture: x86
+
+      - name: Smoke framework-dependent connector
+        shell: pwsh
+        env:
+          DOTNET_ROOT_X86: ${{ runner.temp }}/dotnet-x86
+        run: |
+          $id = '${{ steps.metadata.outputs.id }}'
+          $projectName = '${{ steps.metadata.outputs.project_name }}'
+          $frameworkExecutable = "artifacts/$id/framework-dependent/Awoo.Connector.$projectName.exe"
+
           node scripts/smoke-connector.mjs `
             "$frameworkExecutable" `
             "$id"
+
+      - name: Package framework-dependent connector
+        shell: pwsh
+        run: |
+          $id = '${{ steps.metadata.outputs.id }}'
+          $frameworkOutput = "artifacts/$id/framework-dependent"
 
           Compress-Archive `
             -Path "$frameworkOutput/*" `
