@@ -148,12 +148,28 @@ jobs:
 
       - name: Smoke framework-dependent connector
         shell: pwsh
-        env:
-          DOTNET_ROOT_X86: ${{ runner.temp }}/dotnet-x86
         run: |
           $id = '${{ steps.metadata.outputs.id }}'
           $projectName = '${{ steps.metadata.outputs.project_name }}'
+          $runtime = '${{ steps.metadata.outputs.runtime }}'
           $frameworkExecutable = "artifacts/$id/framework-dependent/Awoo.Connector.$projectName.exe"
+
+          if ($runtime -eq 'win-x86') {
+            if ([string]::IsNullOrWhiteSpace($env:DOTNET_ROOT)) {
+              throw 'x86 setup-dotnet did not export DOTNET_ROOT.'
+            }
+            $fxrRoot = Join-Path $env:DOTNET_ROOT 'host\fxr'
+            if (-not (Test-Path -LiteralPath $fxrRoot)) {
+              throw "x86 .NET hostfxr directory is missing: $fxrRoot"
+            }
+            $net8HostFxr = Get-ChildItem -LiteralPath $fxrRoot -Directory |
+              Where-Object Name -Like '8.*' |
+              Select-Object -First 1
+            if (-not $net8HostFxr) {
+              throw "x86 .NET 8 hostfxr is missing below: $fxrRoot"
+            }
+            $env:DOTNET_ROOT_X86 = $env:DOTNET_ROOT
+          }
 
           node scripts/smoke-connector.mjs `
             "$frameworkExecutable" `

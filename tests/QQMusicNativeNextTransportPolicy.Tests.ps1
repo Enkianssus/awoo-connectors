@@ -63,7 +63,7 @@ foreach ($expectedProfile in $expectedProfiles) {
     }
 }
 
-if ([string]$project.Project.PropertyGroup.Version -ne '22.52.3') {
+if ([string]$project.Project.PropertyGroup.Version -ne '22.52.4') {
     throw 'QQ Music connector version must follow the tested QQ Music 22.52 branch.'
 }
 
