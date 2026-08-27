@@ -30,6 +30,7 @@ internal static class QQMusicPlaybackAnchorPolicy
     internal static QQMusicPlaybackAnchorDecision Evaluate(
         QQMusicPlaybackState state,
         QQMusicTimelineEvidence? timeline,
+        bool hasActiveAudioSession,
         bool sessionObservedPlaying)
     {
         if (!state.IsRunning)
@@ -53,7 +54,8 @@ internal static class QQMusicPlaybackAnchorPolicy
         // after that same-process observation, a later paused state remains a
         // valid anchor.
         var observedPlaying = sessionObservedPlaying
-            || IsCrediblePlayingTimeline(timeline);
+            || hasActiveAudioSession
+                && IsCrediblePlayingTimeline(timeline);
         if (!observedPlaying)
         {
             return Missing();

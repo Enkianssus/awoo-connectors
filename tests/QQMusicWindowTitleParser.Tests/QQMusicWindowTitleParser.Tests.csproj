@@ -18,7 +18,11 @@
              Link="QQMusicTrackMatchPolicy.cs" />
     <Compile Include="..\..\src\QQMusic\QQMusicNativeController.cs"
              Link="QQMusicNativeController.cs" />
+    <Compile Include="..\..\src\QQMusic\QQMusicAudioMuteScope.cs"
+             Link="QQMusicAudioMuteScope.cs" />
     <Compile Include="..\..\src\QQMusic\QQMusicPlaybackAnchorPolicy.cs"
              Link="QQMusicPlaybackAnchorPolicy.cs" />
+    <Compile Include="..\..\src\Shared\PlayerContracts.cs"
+             Link="PlayerContracts.cs" />
   </ItemGroup>
 </Project>

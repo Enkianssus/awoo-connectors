@@ -161,6 +161,7 @@ static QQMusicTimelineEvidence Timeline(
 var freshLaunch = QQMusicPlaybackAnchorPolicy.Evaluate(
     PlaybackState(true, null),
     Timeline("Paused"),
+    hasActiveAudioSession: false,
     sessionObservedPlaying: false);
 if (freshLaunch.IsReliable
     || freshLaunch.FailureCode
@@ -173,6 +174,7 @@ if (freshLaunch.IsReliable
 var captionOnly = QQMusicPlaybackAnchorPolicy.Evaluate(
     PlaybackState(true, "Song"),
     null,
+    hasActiveAudioSession: true,
     sessionObservedPlaying: false);
 if (captionOnly.IsReliable
     || captionOnly.FailureCode
@@ -182,9 +184,23 @@ if (captionOnly.IsReliable
         "A parsed QQ caption alone must not establish the playback anchor.");
 }
 
+var ghostPlaying = QQMusicPlaybackAnchorPolicy.Evaluate(
+    PlaybackState(true, "Song"),
+    Timeline("Playing"),
+    hasActiveAudioSession: false,
+    sessionObservedPlaying: false);
+if (ghostPlaying.IsReliable
+    || ghostPlaying.FailureCode
+        != QQMusicPlaybackAnchorPolicy.MissingFailureCode)
+{
+    throw new InvalidOperationException(
+        "A stale GSMTC Playing timeline without active QQ audio must be rejected.");
+}
+
 var playing = QQMusicPlaybackAnchorPolicy.Evaluate(
     PlaybackState(true, "Song"),
     Timeline("Playing"),
+    hasActiveAudioSession: true,
     sessionObservedPlaying: false);
 if (!playing.IsReliable || !playing.ObservedPlaying)
 {
@@ -195,6 +211,7 @@ if (!playing.IsReliable || !playing.ObservedPlaying)
 var pausedAfterPlaying = QQMusicPlaybackAnchorPolicy.Evaluate(
     PlaybackState(true, "Song"),
     Timeline("Paused"),
+    hasActiveAudioSession: false,
     sessionObservedPlaying: true);
 if (!pausedAfterPlaying.IsReliable)
 {
@@ -205,11 +222,49 @@ if (!pausedAfterPlaying.IsReliable)
 var disconnected = QQMusicPlaybackAnchorPolicy.Evaluate(
     PlaybackState(false, null),
     null,
+    hasActiveAudioSession: false,
     sessionObservedPlaying: false);
 if (disconnected.IsReliable || disconnected.FailureCode is not null)
 {
     throw new InvalidOperationException(
         "A disconnected QQ process must not be reported as a missing playback anchor.");
+}
+
+if (!QQMusicAudioMuteScope.IsActiveAudioSessionState(1)
+    || QQMusicAudioMuteScope.IsActiveAudioSessionState(0)
+    || QQMusicAudioMuteScope.IsActiveAudioSessionState(2))
+{
+    throw new InvalidOperationException(
+        "Windows active audio-session state mapping is incorrect.");
+}
+
+var snapshot = new PlayerSnapshot(
+    true,
+    "QQ 音乐",
+    101,
+    "22.52",
+    "test",
+    null,
+    DateTimeOffset.UtcNow,
+    PlaybackAnchorReady: true);
+if (!snapshot.PlaybackAnchorReady)
+{
+    throw new InvalidOperationException(
+        "PlayerSnapshot must expose an explicit QQ playback-anchor state.");
+}
+
+var legacySnapshot = new PlayerSnapshot(
+    true,
+    "legacy",
+    null,
+    string.Empty,
+    string.Empty,
+    null,
+    DateTimeOffset.UtcNow);
+if (legacySnapshot.PlaybackAnchorReady)
+{
+    throw new InvalidOperationException(
+        "PlayerSnapshot anchor state must remain false for legacy adapters.");
 }
 
 Console.WriteLine("QQ Music metadata policy tests passed.");

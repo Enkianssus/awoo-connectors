@@ -9,28 +9,39 @@ namespace UnifiedPlayerControlPoc;
 /// </summary>
 internal sealed class QQMusicAudioMuteScope : IDisposable
 {
+    private const int AudioSessionStateActive = 1;
     private readonly List<AudioSession> _sessions;
+    private readonly int _activeSessionCount;
     private Guid _eventContext = Guid.NewGuid();
     private bool _muteApplied;
     private bool _disposed;
 
     private QQMusicAudioMuteScope(
         List<AudioSession> sessions,
-        string captureError)
+        string captureError,
+        int activeSessionCount)
     {
         _sessions = sessions;
         CaptureError = captureError;
+        _activeSessionCount = activeSessionCount;
     }
 
     public int CapturedSessionCount => _sessions.Count;
+
+    public bool HasActiveAudioSession => _activeSessionCount > 0;
 
     public string CaptureError { get; }
 
     public string LastError { get; private set; } = string.Empty;
 
-    public static QQMusicAudioMuteScope Capture()
+    public static QQMusicAudioMuteScope Capture(
+        int? expectedProcessId = null)
     {
         var sessions = new List<AudioSession>();
+        var activeSessionCount = 0;
+        var expectedProcess = expectedProcessId is > 0
+            ? checked((uint)expectedProcessId.Value)
+            : (uint?)null;
         try
         {
             object deviceEnumeratorObject =
@@ -64,9 +75,22 @@ internal sealed class QQMusicAudioMuteScope : IDisposable
                         index,
                         out var sessionControl) < 0
                     || sessionControl is not IAudioSessionControl2 control2
-                    || sessionControl is not ISimpleAudioVolume volume
                     || control2.GetProcessId(out var processId) < 0
                     || !IsQqMusicProcess(processId)
+                    || expectedProcess.HasValue
+                        && processId != expectedProcess.Value)
+                {
+                    continue;
+                }
+
+                var isActive = control2.GetState(out var sessionState) >= 0
+                    && IsActiveAudioSessionState(sessionState);
+                if (isActive)
+                {
+                    activeSessionCount++;
+                }
+
+                if (sessionControl is not ISimpleAudioVolume volume
                     || volume.GetMute(out var wasMuted) < 0)
                 {
                     continue;
@@ -75,16 +99,21 @@ internal sealed class QQMusicAudioMuteScope : IDisposable
                 sessions.Add(new AudioSession(
                     sessionControl,
                     volume,
-                    wasMuted));
+                    wasMuted,
+                    isActive));
             }
 
-            return new QQMusicAudioMuteScope(sessions, string.Empty);
+            return new QQMusicAudioMuteScope(
+                sessions,
+                string.Empty,
+                activeSessionCount);
         }
         catch (Exception exception)
         {
             return new QQMusicAudioMuteScope(
                 sessions,
-                $"{exception.GetType().Name}: {exception.Message}");
+                $"{exception.GetType().Name}: {exception.Message}",
+                activeSessionCount);
         }
     }
 
@@ -197,10 +226,14 @@ internal sealed class QQMusicAudioMuteScope : IDisposable
         }
     }
 
+    internal static bool IsActiveAudioSessionState(int state) =>
+        state == AudioSessionStateActive;
+
     private sealed record AudioSession(
         IAudioSessionControl SessionControl,
         ISimpleAudioVolume Volume,
-        bool WasMuted);
+        bool WasMuted,
+        bool IsActive);
 
     private enum EDataFlow
     {

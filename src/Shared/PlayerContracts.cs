@@ -56,7 +56,8 @@ internal sealed record PlayerSnapshot(
     DateTimeOffset ObservedAt,
     PlayerTrack? Next = null,
     string NextSource = "",
-    string? NextObservation = null);
+    string? NextObservation = null,
+    bool PlaybackAnchorReady = false);
 
 internal sealed record PlayerOperationResult(
     OperationOutcome Outcome,

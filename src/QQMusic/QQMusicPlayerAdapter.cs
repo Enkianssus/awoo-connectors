@@ -80,7 +80,8 @@ internal sealed class QQMusicPlayerAdapter :
                     string.Empty,
                     "未连接：没有发现可见 QQ 音乐窗口",
                     null,
-                    DateTimeOffset.Now);
+                    DateTimeOffset.Now,
+                    PlaybackAnchorReady: false);
             }
 
             StartCompatibilityReportOnce();
@@ -114,7 +115,7 @@ internal sealed class QQMusicPlayerAdapter :
                         mediaTrack.Artist)
                     ?? mediaTrack;
             }
-            _ = EvaluatePlaybackAnchor(state);
+            var anchor = EvaluatePlaybackAnchor(state);
             if (current is not null
                 && string.IsNullOrWhiteSpace(current.CoverUrl))
             {
@@ -136,7 +137,8 @@ internal sealed class QQMusicPlayerAdapter :
                 DateTimeOffset.Now,
                 guardedNext,
                 guardedNext is null ? string.Empty : "qq-logical-guard",
-                guardedNext is null ? "unknown" : "track");
+                guardedNext is null ? "unknown" : "track",
+                PlaybackAnchorReady: anchor.IsReliable);
         }, cancellationToken);
     }
 
@@ -1446,6 +1448,12 @@ internal sealed class QQMusicPlayerAdapter :
             ? null
             : FindProcessId(state.WindowHandle.Value);
         ObserveNativeSession(processId);
+        var hasActiveAudioSession = false;
+        if (processId is not null)
+        {
+            using var audio = QQMusicAudioMuteScope.Capture(processId.Value);
+            hasActiveAudioSession = audio.HasActiveAudioSession;
+        }
         var timeline = _eventMonitor.ReadTimelineSnapshot();
         var evidence = timeline is null
             ? null
@@ -1459,6 +1467,7 @@ internal sealed class QQMusicPlayerAdapter :
             var decision = QQMusicPlaybackAnchorPolicy.Evaluate(
                 state,
                 evidence,
+                hasActiveAudioSession,
                 _sessionObservedPlaying);
             if (decision.ObservedPlaying)
             {
@@ -2064,6 +2073,7 @@ internal sealed class QQMusicPlayerAdapter :
             snapshot.ProcessId?.ToString(),
             snapshot.Version,
             snapshot.Status,
+            snapshot.PlaybackAnchorReady.ToString(),
             current?.Id,
             current?.Title,
             current?.Artist,
