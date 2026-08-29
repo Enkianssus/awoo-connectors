@@ -49,7 +49,8 @@ internal sealed class QQMusicPlayerAdapter :
 
     public string DisplayName => "QQ 音乐";
 
-    public string TestedVersion => "22.22 / 22.41 / 22.51 / 22.52";
+    public string TestedVersion =>
+        "22.22 / 22.41 / 22.51 / 22.52 / 22.60";
 
     public bool AllowUnsafeNativeNext { get; set; }
 

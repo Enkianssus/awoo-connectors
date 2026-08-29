@@ -51,6 +51,26 @@ $expectedProfiles = @(
             getCategoryCountRva = '0x004FE0F0'
             songItemSize = '0xA0'
         }
+    },
+    @{
+        Version = '22.60'
+        Fields = @{
+            fileVersion = '22.60'
+            clientSha256 = 'DDF538362972357E7637019192D593A136EE0B7D9330EBCE583289BDAA58B2A6'
+            commonSha256 = 'F134E98C4698864B5400D4F247C43299E79E9616A7131042378E78AA5850EBA4'
+            singleSongPlayDispatchRva = '0x004A7494'
+            expectedPlayDispatchBytes = 'E8 E7 8C 16 00'
+            getCatManagerRva = '0x0000F0ED'
+            getQqUinExRva = '0x0002E1E5'
+            songItemConstructorRva = '0x0004B8D0'
+            songItemDestructorRva = '0x0004B410'
+            addSongsRva = '0x00458F50'
+            hiddenCategoryIdRva = '0x00C5D1D0'
+            getListRootRva = '0x00632DD0'
+            getListHelperRva = '0x00632F30'
+            getCategoryCountRva = '0x00509A60'
+            songItemSize = '0xA0'
+        }
     }
 )
 foreach ($expectedProfile in $expectedProfiles) {
@@ -63,8 +83,8 @@ foreach ($expectedProfile in $expectedProfiles) {
     }
 }
 
-if ([string]$project.Project.PropertyGroup.Version -ne '22.52.4') {
-    throw 'QQ Music connector version must follow the tested QQ Music 22.52 branch.'
+if ([string]$project.Project.PropertyGroup.Version -ne '22.60.1') {
+    throw 'QQ Music connector version must follow the tested QQ Music 22.60 branch.'
 }
 
 Write-Output 'QQMusicNativeNextTransportPolicy.Tests passed.'

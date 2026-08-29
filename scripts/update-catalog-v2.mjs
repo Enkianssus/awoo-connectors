@@ -47,7 +47,7 @@ const supported = {
   qqmusic: {
     name: 'QQ音乐',
     playerVersionPolicy: '22.*',
-    testedPlayerVersion: '22.22 / 22.41 / 22.51 / 22.52',
+    testedPlayerVersion: '22.22 / 22.41 / 22.51 / 22.52 / 22.60',
     runtime: 'win-x86',
     versionPattern: /^\d+\.\d+\.\d+$/
   },

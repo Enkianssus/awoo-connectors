@@ -23,8 +23,8 @@ older cores or connectors. NetEase `3.1.37.205354.7` advertises
 `snapshot-events-v1`; a new core subscribes with `subscribe` and receives exact
 snapshot event envelopes, while an older core continues to use `probe`.
 
-QQ Music connector 22.41.5 uses exact, signed compatibility profiles for QQ Music
-22.22 and 22.41. On a matching DLL hash it calls QQ's internal
+QQ Music connector 22.60.1 uses exact, signed compatibility profiles for QQ Music
+22.22, 22.41, 22.51, 22.52, and 22.60. On a matching DLL hash it calls QQ's internal
 `AddSongs(mode=0)` path to insert exactly one song after the current item, then
 uses QQ's normal Next command. Both immediate play and guarded fallback preserve
 the host playlist instead of rebuilding or appending to it. The mute/pause guard
@@ -122,7 +122,7 @@ component is the connector revision:
 
 - NetEase `3.1.38.205386` -> connector `3.1.38.205386.1`
 - KuGou `20.1.41.27870` -> connector `20.1.41.1`
-- QQ Music `22.52` -> connector `22.52.1`
+- QQ Music `22.60` -> connector `22.60.1`
 
 KuGou deliberately omits its noisy final client build component:
 
