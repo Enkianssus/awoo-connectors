@@ -49,8 +49,16 @@ if ((-not $sessionReset.Success) -or
 if (($audioScope -notmatch 'int\?\s+expectedProcessId') -or
     ($audioScope -notmatch 'control2\.GetState\(out var sessionState\)') -or
     ($audioScope -notmatch 'IsActiveAudioSessionState\(sessionState\)') -or
-    ($audioScope -notmatch 'HasActiveAudioSession')) {
+    ($audioScope -notmatch 'HasActiveAudioSession') -or
+    ($audioScope -notmatch 'EnumAudioEndpoints') -or
+    ($audioScope -notmatch 'DeviceStateActive') -or
+    ($audioScope -notmatch 'IMMDeviceCollection') -or
+    ($audioScope -notmatch 'QQMusicAudioSessionCapturePolicy\.Capture')) {
     throw 'QQ audio-session capture must read IAudioSessionControl2 state for the current process.'
+}
+
+if ($audioScope -match 'deviceEnumerator\s*\.\s*GetDefaultAudioEndpoint\s*\(') {
+    throw 'QQ audio-session capture must not restrict detection to the default render endpoint.'
 }
 
 if (($adapter -notmatch 'QQMusicAudioMuteScope\.Capture\(processId\.Value\)') -or

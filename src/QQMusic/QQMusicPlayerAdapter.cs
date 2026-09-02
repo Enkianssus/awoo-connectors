@@ -34,8 +34,13 @@ internal sealed class QQMusicPlayerAdapter :
     private readonly HashSet<Task> _softwareNextTasks = [];
     private readonly List<PendingQqNativeNext> _pendingNativeNext = [];
     private PlayerTrack? _softwareNextTarget;
+    private PlayerTrack? _lateRecoveryTarget;
+    private PlayerTrack? _lastObservedTrack;
+    private NextGuardState _softwareNextState = NextGuardState.None;
+    private long _softwareNextGeneration;
+    private long _softwareNextGuardIdSequence;
+    private long _softwareNextGuardId;
     private volatile string _softwareNextStatus = string.Empty;
-    private string _lastObservedPlaybackKey = string.Empty;
     private long _observedTrackSequence;
     private int? _nativeSessionProcessId;
     private bool _sessionObservedPlaying;
@@ -123,7 +128,7 @@ internal sealed class QQMusicPlayerAdapter :
                 ScheduleArtworkLookup(current);
             }
             ClearPendingNativeNextIfPlaying(current);
-            var guardedNext = GetSoftwareNextTarget();
+            var guardedNext = GetSoftwareNextSnapshot();
             return new PlayerSnapshot(
                 true,
                 DisplayName,
@@ -136,10 +141,12 @@ internal sealed class QQMusicPlayerAdapter :
                     : $"；{_softwareNextStatus}"),
                 current,
                 DateTimeOffset.Now,
-                guardedNext,
-                guardedNext is null ? string.Empty : "qq-logical-guard",
-                guardedNext is null ? "unknown" : "track",
-                PlaybackAnchorReady: anchor.IsReliable);
+                guardedNext.Target,
+                guardedNext.Target is null ? string.Empty : "qq-logical-guard",
+                guardedNext.Target is null ? "unknown" : "track",
+                PlaybackAnchorReady: anchor.IsReliable,
+                NextGuardState: guardedNext.State,
+                NextGuardId: guardedNext.GuardId);
         }, cancellationToken);
     }
 
@@ -879,10 +886,21 @@ internal sealed class QQMusicPlayerAdapter :
                 QQMusicPlaybackAnchorPolicy.MissingFailureCode);
         }
 
+        var initialAnchor = ResolveKnownTrack(
+                currentState.Title,
+                currentState.Artist)
+            ?? before.Current
+            ?? new PlayerTrack(
+                string.Empty,
+                currentState.Title!,
+                currentState.Artist ?? string.Empty,
+                string.Empty);
+
         var pendingCancellation =
             CancellationTokenSource.CreateLinkedTokenSource(
                 _lifetimeCancellation.Token);
         CancellationTokenSource? previousCancellation;
+        long guardId;
         lock (_softwareNextSync)
         {
             if (Volatile.Read(ref _disposing) != 0)
@@ -896,12 +914,22 @@ internal sealed class QQMusicPlayerAdapter :
             previousCancellation = _softwareNextCancellation;
             _softwareNextCancellation = pendingCancellation;
             _softwareNextTarget = track;
+            _lateRecoveryTarget = null;
+            _softwareNextState = NextGuardState.Armed;
+            _softwareNextGeneration++;
+            _softwareNextGuardIdSequence++;
+            if (_softwareNextGuardIdSequence <= 0)
+            {
+                _softwareNextGuardIdSequence = 1;
+            }
+            _softwareNextGuardId = _softwareNextGuardIdSequence;
+            guardId = _softwareNextGuardId;
             _softwareNextStatus = $"下一首静音防漏音守卫待命：{track.DisplayName}";
             var task = Task.Run(
                 () => MonitorSoftwareNextEventsAsync(
                     pendingCancellation,
                     currentState.WindowTitle!,
-                    currentKey,
+                    initialAnchor,
                     track,
                     payload));
             _softwareNextTask = task;
@@ -924,18 +952,29 @@ internal sealed class QQMusicPlayerAdapter :
             previousCancellation.Cancel();
         }
 
+        _eventMonitor.NotifySnapshotInvalidated();
+
+        var armedSnapshot = before with
+        {
+            Next = track,
+            NextSource = "qq-logical-guard",
+            NextObservation = "track",
+            NextGuardState = NextGuardState.Armed,
+            NextGuardId = guardId
+        };
+
         return new PlayerOperationResult(
             OperationOutcome.Accepted,
             $"已登记静音防漏音下一首：{track.DisplayName}。"
             + "已订阅 Windows 媒体会话与 WinEventHook；发生切换时会先静音 QQ，"
             + "若歌曲错误会在静音中暂停、原生插入目标，再切到下一首。",
-            before);
+            armedSnapshot);
     }
 
     private async Task MonitorSoftwareNextEventsAsync(
         CancellationTokenSource owner,
         string initialWindowTitle,
-        string initialPlaybackKey,
+        PlayerTrack initialAnchor,
         PlayerTrack track,
         QqTrackPayload payload)
     {
@@ -944,15 +983,14 @@ internal sealed class QQMusicPlayerAdapter :
         await using var subscription = _eventMonitor.Subscribe();
         _ = _eventMonitor.EnsureStartedAsync();
         CancellationTokenSource? preMuteTimerCancellation = null;
+        var preserveLateRecoveryTarget = false;
         try
         {
             var baselineWindowTitle = initialWindowTitle;
             var transitionDetected = false;
             var preMuted = false;
             var preMuteSuppressedUntil = DateTimeOffset.MinValue;
-            var correctingWrongTrack = false;
-            var correctionAttempts = 0;
-            Task? correctionTimeout = null;
+            var takeoverAttempted = false;
             Task? transitionObservationTimeout = null;
             Task? preMuteRestoreTimeout = null;
             Task? preMuteTimer = null;
@@ -974,7 +1012,7 @@ internal sealed class QQMusicPlayerAdapter :
             void SchedulePreMuteTimer()
             {
                 CancelPreMuteTimer();
-                if (preMuted || transitionDetected || correctingWrongTrack)
+                if (preMuted || transitionDetected)
                 {
                     return;
                 }
@@ -1039,10 +1077,6 @@ internal sealed class QQMusicPlayerAdapter :
                 {
                     waiters.Add(preMuteRestoreTimeout);
                 }
-                if (correctionTimeout is not null)
-                {
-                    waiters.Add(correctionTimeout);
-                }
                 if (transitionObservationTimeout is not null)
                 {
                     waiters.Add(transitionObservationTimeout);
@@ -1054,8 +1088,9 @@ internal sealed class QQMusicPlayerAdapter :
 
                 if (ReferenceEquals(completed, expiration))
                 {
-                    SetSoftwareNextStatus(
+                    SetSoftwareNextTerminalState(
                         owner,
+                        NextGuardState.Expired,
                         "软件下一首已过期（12 小时未发生切歌）。");
                     return;
                 }
@@ -1109,79 +1144,6 @@ internal sealed class QQMusicPlayerAdapter :
                             + "已恢复原静音状态并继续等待事件。");
                     }
                     SchedulePreMuteTimer();
-                    continue;
-                }
-
-                if (correctionTimeout is not null
-                    && ReferenceEquals(completed, correctionTimeout))
-                {
-                    correctionTimeout = null;
-                    if (correctionAttempts >= 3)
-                    {
-                        audioMute.Restore();
-                        SetSoftwareNextStatus(
-                            owner,
-                            $"兜底已重试 {correctionAttempts} 次仍未确认："
-                            + $"{track.DisplayName}；已停止自动切歌并保留日志。"
-                            + "请检查 QQ 队列或手动重试。");
-                        return;
-                    }
-
-                    var retryExecutable = FindExecutablePath();
-                    if (string.IsNullOrWhiteSpace(retryExecutable))
-                    {
-                        audioMute.Restore();
-                        SetSoftwareNextStatus(
-                            owner,
-                            "兜底重试失败：未找到 QQMusic.exe。");
-                        return;
-                    }
-
-                    correctionAttempts++;
-                    _ = await Task.Run(
-                        () => SendSingleInstanceCommand(
-                            retryExecutable,
-                            "/playcontrol",
-                            "'pause'",
-                            helperWaitMilliseconds: 100),
-                        cancellationToken).ConfigureAwait(false);
-                    var retryNative = await EnsureNativeNextInsertedAsync(
-                        track,
-                        payload,
-                        cancellationToken).ConfigureAwait(false);
-                    if (!retryNative.Accepted)
-                    {
-                        audioMute.Restore();
-                        SetSoftwareNextStatus(
-                            owner,
-                            "兜底重试时原生目标被拒绝："
-                            + retryNative.Verification);
-                        return;
-                    }
-
-                    var retryNext = await Task.Run(
-                        () => SendSingleInstanceCommand(
-                            retryExecutable,
-                            "/playcontrol",
-                            "'next'",
-                            helperWaitMilliseconds: 100),
-                        cancellationToken).ConfigureAwait(false);
-                    if (!retryNext.Sent)
-                    {
-                        audioMute.Restore();
-                        SetSoftwareNextStatus(
-                            owner,
-                            "兜底重试的 next 发送失败：" + retryNext.Message);
-                        return;
-                    }
-
-                    correctionTimeout = Task.Delay(
-                        TimeSpan.FromSeconds(3),
-                        cancellationToken);
-                    SetSoftwareNextStatus(
-                        owner,
-                        $"兜底第 {correctionAttempts} 次重试已发送，"
-                        + $"继续等待确认：{track.DisplayName}");
                     continue;
                 }
 
@@ -1248,6 +1210,8 @@ internal sealed class QQMusicPlayerAdapter :
                         observedWindowTitle,
                         baselineWindowTitle,
                         StringComparison.Ordinal)
+                    && !(observedTrack is not null
+                        && ObservationMatches(initialAnchor, observedTrack))
                     && !transitionDetected)
                 {
                     CancelPreMuteTimer();
@@ -1271,15 +1235,14 @@ internal sealed class QQMusicPlayerAdapter :
                     continue;
                 }
 
-                var observedKey = BuildPlaybackKey(observedTrack);
-                if (observedKey == initialPlaybackKey)
+                if (ObservationMatches(initialAnchor, observedTrack))
                 {
                     if (playerEvent.Kind
                         == QQMusicEventKind.WindowTitleChanged)
                     {
                         baselineWindowTitle = observedWindowTitle;
                     }
-                    if (transitionDetected && !correctingWrongTrack)
+                    if (transitionDetected)
                     {
                         audioMute.Restore();
                         preMuted = false;
@@ -1313,85 +1276,65 @@ internal sealed class QQMusicPlayerAdapter :
                 {
                     ClearPendingNativeNextIfPlaying(track);
                     audioMute.Restore();
-                    SetSoftwareNextStatus(
+                    SetSoftwareNextTerminalState(
                         owner,
+                        NextGuardState.Completed,
                         $"下一首已正确命中：{track.DisplayName}");
                     return;
-                }
-
-                if (correctingWrongTrack)
-                {
-                    continue;
                 }
 
                 var executable = FindExecutablePath();
                 if (string.IsNullOrWhiteSpace(executable))
                 {
-                    SetSoftwareNextStatus(
+                    audioMute.Restore();
+                    SetSoftwareNextTerminalState(
                         owner,
+                        NextGuardState.TerminalFailure,
                         "软件下一首失败：未找到 QQMusic.exe");
                     return;
                 }
 
+                var recoveryAction = QQMusicWrongNextRecoveryPolicy.Decide(
+                    takeoverAttempted);
+                if (recoveryAction == QQMusicWrongNextRecoveryAction.Stop)
+                {
+                    audioMute.Restore();
+                    SetSoftwareNextTerminalState(
+                        owner,
+                        NextGuardState.TerminalFailure,
+                        "错误下一首已停止自动切歌："
+                        + "队列保留接管已经尝试过，不再发送新的 Next。"
+                        + "已恢复原静音状态。");
+                    return;
+                }
+
+                takeoverAttempted = true;
                 SetSoftwareNextStatus(
                     owner,
                     $"检测到错误下一首：{observedTrack.DisplayName}；"
-                    + "QQ 音频已静音，正在暂停并接管。");
-                var pause = await Task.Run(
-                    () => SendSingleInstanceCommand(
-                        executable,
-                        "/playcontrol",
-                        "'pause'",
-                        helperWaitMilliseconds: 100),
-                    cancellationToken).ConfigureAwait(false);
-                await Task.Delay(20, cancellationToken)
-                    .ConfigureAwait(false);
-                var native = await EnsureNativeNextInsertedAsync(
-                    track,
-                    payload,
-                    cancellationToken).ConfigureAwait(false);
-                if (!native.Accepted)
-                {
-                    audioMute.Restore();
-                    SetSoftwareNextStatus(
+                    + "QQ 音频已静音，正在执行唯一一次队列保留接管。");
+                var recovery =
+                    await ExecuteQueuePreservingWrongNextRecoveryAsync(
                         owner,
-                        "错误下一首已暂停，但原生插入目标被画像校验拒绝；"
-                        + "为保护 QQ 原队列，没有使用 /playbysongid。"
-                        + $" 验证={native.Verification}；已恢复原静音状态。");
-                    return;
-                }
-
-                correctingWrongTrack = true;
-                correctionAttempts = 1;
-                transitionObservationTimeout = null;
-                correctionTimeout = Task.Delay(
-                    TimeSpan.FromSeconds(3),
-                    cancellationToken);
-                var next = await Task.Run(
-                    () => SendSingleInstanceCommand(
                         executable,
-                        "/playcontrol",
-                        "'next'",
-                        helperWaitMilliseconds: 100),
-                    cancellationToken).ConfigureAwait(false);
-                if (!next.Sent)
+                        initialAnchor,
+                        observedTrack,
+                        track,
+                        payload,
+                        audioMute,
+                        cancellationToken).ConfigureAwait(false);
+                preserveLateRecoveryTarget =
+                    recovery.LateRecoveryTargetRecorded;
+                if (!recovery.LateRecoveryTargetRecorded)
                 {
-                    audioMute.Restore();
-                    SetSoftwareNextStatus(
+                    SetSoftwareNextTerminalState(
                         owner,
-                        "目标已插入 QQ 下一首，但 next 发送失败："
-                        + next.Message
-                        + "；已恢复原静音状态。");
-                    return;
+                        recovery.Verified
+                            ? NextGuardState.Completed
+                            : NextGuardState.TerminalFailure,
+                        recovery.Message);
                 }
-
-                SetSoftwareNextStatus(
-                    owner,
-                    pause.Sent
-                        ? "已在静音中暂停错误歌曲并发送目标，正在等待切歌事件确认："
-                          + track.DisplayName
-                        : "暂停未确认，但已发送目标，正在等待切歌事件确认："
-                          + track.DisplayName);
+                return;
             }
         }
         catch (OperationCanceledException)
@@ -1400,12 +1343,15 @@ internal sealed class QQMusicPlayerAdapter :
         }
         catch (Exception exception)
         {
-            SetSoftwareNextStatus(
+            SetSoftwareNextTerminalState(
                 owner,
+                NextGuardState.TerminalFailure,
                 $"软件下一首事件守卫异常：{exception.Message}");
         }
         finally
         {
+            audioMute.Restore();
+            var ownerWasCanceled = owner.IsCancellationRequested;
             owner.Cancel();
             preMuteTimerCancellation?.Cancel();
             preMuteTimerCancellation?.Dispose();
@@ -1415,11 +1361,271 @@ internal sealed class QQMusicPlayerAdapter :
                 {
                     _softwareNextCancellation = null;
                     _softwareNextTask = null;
-                    _softwareNextTarget = null;
+                    if (_softwareNextState is not NextGuardState.WaitingLateTarget
+                        and not NextGuardState.TerminalFailure)
+                    {
+                        _softwareNextTarget = null;
+                    }
+                    if (!preserveLateRecoveryTarget || ownerWasCanceled)
+                    {
+                        _lateRecoveryTarget = null;
+                    }
                 }
             }
+            // Publish the final state after the monitor has released its
+            // owner and cleared its active task. This keeps a terminal event
+            // from racing the host while connector guard work is in flight,
+            // and also exposes target removal to the host immediately.
+            _eventMonitor.NotifySnapshotInvalidated();
             owner.Dispose();
         }
+    }
+
+    private async Task<WrongNextRecoveryResult>
+        ExecuteQueuePreservingWrongNextRecoveryAsync(
+            CancellationTokenSource owner,
+            string executable,
+            PlayerTrack initialAnchor,
+            PlayerTrack observedWrongTrack,
+            PlayerTrack track,
+            QqTrackPayload payload,
+            QQMusicAudioMuteScope audioMute,
+            CancellationToken cancellationToken)
+    {
+        var operationAcquired = false;
+        var snapshotsSuppressed = false;
+        try
+        {
+            // The event guard normally runs outside ExecuteAsync. Hold the
+            // same gate while repairing the queue so an ordinary Previous or
+            // Next command cannot interleave with the anchor reset.
+            await _operationGate.WaitAsync(cancellationToken)
+                .ConfigureAwait(false);
+            operationAcquired = true;
+            Interlocked.Increment(ref _snapshotSuppressionDepth);
+            snapshotsSuppressed = true;
+
+            var before = await ProbeAsync(cancellationToken)
+                .ConfigureAwait(false);
+            if (TrackMatches(before.Current, track))
+            {
+                return new WrongNextRecoveryResult(
+                    true,
+                    $"错误下一首期间目标已自行命中：{track.DisplayName}；"
+                    + "已恢复原静音状态。",
+                    before);
+            }
+
+            if (!ObservationMatches(before.Current, observedWrongTrack))
+            {
+                return new WrongNextRecoveryResult(
+                    false,
+                    "错误下一首期间 QQ 当前歌曲已经被其他操作改变；"
+                    + "为避免破坏队列，未发送 Previous/Next，"
+                    + "已恢复原静音状态。",
+                    before);
+            }
+
+            var previous = await Task.Run(
+                    () => SendSingleInstanceCommand(
+                        executable,
+                        "/playcontrol",
+                        "'prev'",
+                        helperWaitMilliseconds: 100),
+                    cancellationToken)
+                .ConfigureAwait(false);
+            if (!previous.Sent)
+            {
+                return new WrongNextRecoveryResult(
+                    false,
+                    "错误下一首已静音，但 Previous 发送失败；"
+                    + previous.Message
+                    + "，已恢复原静音状态。",
+                    before);
+            }
+
+            var anchor = await WaitForPlaybackAnchorAsync(
+                    initialAnchor,
+                    observedWrongTrack,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            if (anchor is null)
+            {
+                var latest = await ProbeAsync(cancellationToken)
+                    .ConfigureAwait(false);
+                var lateRecoveryStatus =
+                    "已发送 Previous，但未确认回到原播放锚点；"
+                    + "接管已停止，等待目标迟到到达后仅更新状态，"
+                    + "不再发送播放或切歌命令。";
+                var lateRecoveryTargetRecorded =
+                    TryMarkLateRecoveryTarget(
+                        owner,
+                        track,
+                        lateRecoveryStatus);
+                return new WrongNextRecoveryResult(
+                    false,
+                    "已发送 Previous，但未确认回到原播放锚点；"
+                    + "为避免继续向下切歌，接管已停止，"
+                    + "已恢复原静音状态。",
+                    latest,
+                    lateRecoveryTargetRecorded);
+            }
+
+            var pause = await Task.Run(
+                    () => SendSingleInstanceCommand(
+                        executable,
+                        "/playcontrol",
+                        "'pause'",
+                        helperWaitMilliseconds: 100),
+                    cancellationToken)
+                .ConfigureAwait(false);
+            if (!pause.Sent)
+            {
+                return new WrongNextRecoveryResult(
+                    false,
+                    "已回到原播放锚点，但暂停发送失败；"
+                    + pause.Message
+                    + "，未插入目标，已恢复原静音状态。",
+                    anchor);
+            }
+
+            await Task.Delay(20, cancellationToken).ConfigureAwait(false);
+            var native = await EnsureNativeNextInsertedAsync(
+                    track,
+                    payload,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            if (!native.Accepted)
+            {
+                return new WrongNextRecoveryResult(
+                    false,
+                    "已回到原播放锚点并暂停，但原生目标插入被拒绝；"
+                    + "为保护 QQ 原队列，没有使用 /playbysongid。"
+                    + $" 验证={native.Verification}；已恢复原静音状态。",
+                    await ProbeAsync(cancellationToken).ConfigureAwait(false));
+            }
+
+            // This is the only Next emitted by wrong-track recovery. There is
+            // deliberately no retry timer: a failed or unverified takeover
+            // must stop instead of walking down the user's existing queue.
+            var next = await Task.Run(
+                    () => SendSingleInstanceCommand(
+                        executable,
+                        "/playcontrol",
+                        "'next'",
+                        helperWaitMilliseconds: 100),
+                    cancellationToken)
+                .ConfigureAwait(false);
+            if (!next.Sent)
+            {
+                return new WrongNextRecoveryResult(
+                    false,
+                    "目标已重新插入 QQ 下一首，但唯一一次 Next 发送失败；"
+                    + next.Message
+                    + "，已恢复原静音状态。",
+                    await ProbeAsync(cancellationToken).ConfigureAwait(false));
+            }
+
+            var target = await WaitForTargetAsync(
+                    track,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            if (target is not null)
+            {
+                ClearPendingNativeNextIfPlaying(track);
+                var play = await Task.Run(
+                        () => SendSingleInstanceCommand(
+                            executable,
+                            "/playcontrol",
+                            "'play'",
+                            helperWaitMilliseconds: 100),
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                if (!play.Sent)
+                {
+                    return new WrongNextRecoveryResult(
+                        false,
+                        $"已确认目标：{track.DisplayName}，但恢复播放失败；"
+                        + play.Message
+                        + "，已恢复原静音状态。",
+                        target);
+                }
+
+                return new WrongNextRecoveryResult(
+                    true,
+                    $"已通过队列保留接管回到原锚点，重新插入并仅发送一次 Next；"
+                    + $"已确认目标：{track.DisplayName}；已恢复原静音状态。",
+                    target);
+            }
+
+            return new WrongNextRecoveryResult(
+                false,
+                "已回到原锚点、重新插入目标并仅发送一次 Next，"
+                + "但未在 3 秒内确认目标；已停止自动切歌，"
+                + "已恢复原静音状态。",
+                await ProbeAsync(cancellationToken).ConfigureAwait(false));
+        }
+        finally
+        {
+            // Every terminal path, including cancellation or an unexpected
+            // native exception, must release the captured audio state.
+            audioMute.Restore();
+            if (snapshotsSuppressed
+                && Interlocked.Decrement(ref _snapshotSuppressionDepth) == 0)
+            {
+                _eventMonitor.NotifySnapshotInvalidated();
+            }
+            if (operationAcquired)
+            {
+                _operationGate.Release();
+            }
+        }
+    }
+
+    private async Task<PlayerSnapshot?> WaitForPlaybackAnchorAsync(
+        PlayerTrack expectedAnchor,
+        PlayerTrack previousWrongTrack,
+        CancellationToken cancellationToken)
+    {
+        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(3);
+        PlayerSnapshot latest = await ProbeAsync(cancellationToken)
+            .ConfigureAwait(false);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            if (ObservationMatches(latest.Current, expectedAnchor)
+                && !ObservationMatches(latest.Current, previousWrongTrack))
+            {
+                return latest;
+            }
+
+            await Task.Delay(40, cancellationToken).ConfigureAwait(false);
+            latest = await ProbeAsync(cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        return null;
+    }
+
+    private async Task<PlayerSnapshot?> WaitForTargetAsync(
+        PlayerTrack target,
+        CancellationToken cancellationToken)
+    {
+        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(3);
+        PlayerSnapshot latest = await ProbeAsync(cancellationToken)
+            .ConfigureAwait(false);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            if (TrackMatches(latest.Current, target))
+            {
+                return latest;
+            }
+
+            await Task.Delay(40, cancellationToken).ConfigureAwait(false);
+            latest = await ProbeAsync(cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        return null;
     }
 
 
@@ -1435,11 +1641,6 @@ internal sealed class QQMusicPlayerAdapter :
                 parsed.Title,
                 parsed.Artist,
                 string.Empty);
-    }
-
-    private static string BuildPlaybackKey(PlayerTrack track)
-    {
-        return $"{Normalize(track.Title)}|{Normalize(track.Artist)}";
     }
 
     private QQMusicPlaybackAnchorDecision EvaluatePlaybackAnchor(
@@ -1493,6 +1694,21 @@ internal sealed class QQMusicPlayerAdapter :
         _eventMonitor.NotifySnapshotInvalidated();
     }
 
+    private void SetSoftwareNextTerminalState(
+        CancellationTokenSource owner,
+        NextGuardState state,
+        string status)
+    {
+        lock (_softwareNextSync)
+        {
+            if (ReferenceEquals(_softwareNextCancellation, owner))
+            {
+                _softwareNextState = state;
+                _softwareNextStatus = status;
+            }
+        }
+    }
+
     private void CancelSoftwareNext(string status)
     {
         CancellationTokenSource? cancellation;
@@ -1502,6 +1718,10 @@ internal sealed class QQMusicPlayerAdapter :
             _softwareNextCancellation = null;
             _softwareNextTask = null;
             _softwareNextTarget = null;
+            _lateRecoveryTarget = null;
+            _softwareNextState = NextGuardState.None;
+            _softwareNextGeneration++;
+            _softwareNextGuardId = 0;
             _softwareNextStatus = status;
         }
 
@@ -1757,10 +1977,16 @@ internal sealed class QQMusicPlayerAdapter :
             {
                 PrunePendingNativeNextLocked(DateTimeOffset.UtcNow);
                 if (_pendingNativeNext.Any(pending =>
-                        pending.ProcessId == _nativeSessionProcessId
-                        &&
-                        pending.Payload.SongId == payload.SongId
-                        && pending.Payload.SongType == payload.SongType))
+                        QQMusicWrongNextRecoveryPolicy
+                            .ShouldReusePendingNativeNext(
+                                pending.InsertedAtSequence,
+                                _observedTrackSequence,
+                                pending.ProcessId,
+                                _nativeSessionProcessId ?? 0,
+                                pending.Payload.SongId,
+                                pending.Payload.SongType,
+                                payload.SongId,
+                                payload.SongType)))
                 {
                     return new NativeNextEnsureResult(
                         true,
@@ -1842,13 +2068,10 @@ internal sealed class QQMusicPlayerAdapter :
         var changed = false;
         lock (_nativeNextSync)
         {
-            var playbackKey = BuildPlaybackKey(current);
-            if (!string.Equals(
-                    playbackKey,
-                    _lastObservedPlaybackKey,
-                    StringComparison.Ordinal))
+            if (_lastObservedTrack is null
+                || !ObservationMatches(_lastObservedTrack, current))
             {
-                _lastObservedPlaybackKey = playbackKey;
+                _lastObservedTrack = current;
                 _observedTrackSequence++;
             }
 
@@ -1862,10 +2085,130 @@ internal sealed class QQMusicPlayerAdapter :
                 changed = true;
             }
         }
-        if (changed)
+        var lateRecoveryConfirmed =
+            ConfirmLateRecoveryTargetIfPlaying(current);
+        if (changed || lateRecoveryConfirmed)
         {
             _eventMonitor.NotifySnapshotInvalidated();
         }
+    }
+
+    private bool TryMarkLateRecoveryTarget(
+        CancellationTokenSource owner,
+        PlayerTrack target,
+        string status)
+    {
+        var shouldScheduleGrace = false;
+        var generation = 0L;
+        lock (_softwareNextSync)
+        {
+            if (!ReferenceEquals(_softwareNextCancellation, owner))
+            {
+                return false;
+            }
+
+            _lateRecoveryTarget = target;
+            _softwareNextTarget = target;
+            _softwareNextState = NextGuardState.WaitingLateTarget;
+            _softwareNextGeneration++;
+            generation = _softwareNextGeneration;
+            _softwareNextStatus = status;
+            shouldScheduleGrace = true;
+        }
+
+        if (shouldScheduleGrace)
+        {
+            ScheduleLateRecoveryGrace(target, generation);
+        }
+        return true;
+    }
+
+    private bool ConfirmLateRecoveryTargetIfPlaying(PlayerTrack current)
+    {
+        var confirmed = false;
+        lock (_softwareNextSync)
+        {
+            if (_lateRecoveryTarget is null
+                || !TrackMatches(current, _lateRecoveryTarget))
+            {
+                return false;
+            }
+
+            _softwareNextStatus =
+                $"目标延迟到达，已确认：{current.DisplayName}；"
+                + "未重复发送播放或切歌命令。";
+            _lateRecoveryTarget = null;
+            _softwareNextTarget = null;
+            _softwareNextState = NextGuardState.Completed;
+            _softwareNextGeneration++;
+            confirmed = true;
+        }
+        if (confirmed)
+        {
+            _eventMonitor.NotifySnapshotInvalidated();
+        }
+        return confirmed;
+    }
+
+    private void ScheduleLateRecoveryGrace(
+        PlayerTrack target,
+        long generation)
+    {
+        var task = Task.Run(
+            async () =>
+            {
+                try
+                {
+                    await Task.Delay(
+                            QQMusicWrongNextRecoveryPolicy
+                                .LateRecoveryGracePeriod,
+                            _lifetimeCancellation.Token)
+                        .ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+
+                var terminal = false;
+                lock (_softwareNextSync)
+                {
+                    if (_softwareNextGeneration == generation
+                        && ReferenceEquals(_lateRecoveryTarget, target)
+                        && ReferenceEquals(_softwareNextTarget, target)
+                        && _softwareNextState
+                            == NextGuardState.WaitingLateTarget)
+                    {
+                        _softwareNextState = NextGuardState.TerminalFailure;
+                        _softwareNextStatus =
+                            "上一首锚点未确认且迟到目标宽限期已结束；"
+                            + "守卫已终止，等待宿主执行一次队列保留兜底。";
+                        terminal = true;
+                    }
+                }
+
+                if (terminal)
+                {
+                    _eventMonitor.NotifySnapshotInvalidated();
+                }
+            },
+            _lifetimeCancellation.Token);
+
+        lock (_softwareNextSync)
+        {
+            _softwareNextTasks.Add(task);
+        }
+        _ = task.ContinueWith(
+            completedTask =>
+            {
+                lock (_softwareNextSync)
+                {
+                    _softwareNextTasks.Remove(completedTask);
+                }
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
     }
 
     private bool PrunePendingNativeNextLocked(DateTimeOffset now)
@@ -1875,11 +2218,15 @@ internal sealed class QQMusicPlayerAdapter :
         return removed > 0;
     }
 
-    private PlayerTrack? GetSoftwareNextTarget()
+    private (PlayerTrack? Target, NextGuardState State, long GuardId)
+        GetSoftwareNextSnapshot()
     {
         lock (_softwareNextSync)
         {
-            return _softwareNextTarget;
+            return (
+                _softwareNextTarget,
+                _softwareNextState,
+                _softwareNextGuardId);
         }
     }
 
@@ -1894,10 +2241,13 @@ internal sealed class QQMusicPlayerAdapter :
 
             _nativeSessionProcessId = processId;
             _pendingNativeNext.Clear();
-            _lastObservedPlaybackKey = string.Empty;
+            _lastObservedTrack = null;
             _observedTrackSequence = 0;
             _sessionObservedPlaying = false;
         }
+        // A guard is scoped to one concrete QQ process/session. Never carry
+        // even an Armed guard across a restart or transient process loss.
+        CancelSoftwareNext(string.Empty);
     }
 
     private static string? FindExecutablePath()
@@ -2028,17 +2378,35 @@ internal sealed class QQMusicPlayerAdapter :
                 expected.Artist);
     }
 
+    private static bool ObservationMatches(
+        PlayerTrack? actual,
+        PlayerTrack expected)
+    {
+        return actual is not null
+            && QQMusicTrackMatchPolicy
+                .TracksRepresentSameObservation(
+                    actual.Id,
+                    actual.Title,
+                    actual.Artist,
+                    expected.Id,
+                    expected.Title,
+                    expected.Artist);
+    }
+
     private static bool CurrentMetadataRepresentsSameSong(
         PlayerTrack? windowTrack,
         PlayerTrack? mediaTrack)
     {
         return windowTrack is not null
             && mediaTrack is not null
-            && QQMusicTrackMatchPolicy.MetadataRepresentsSameSong(
-                windowTrack.Title,
-                windowTrack.Artist,
-                mediaTrack.Title,
-                mediaTrack.Artist);
+            && QQMusicTrackMatchPolicy
+                .TracksRepresentSameObservation(
+                    windowTrack.Id,
+                    windowTrack.Title,
+                    windowTrack.Artist,
+                    mediaTrack.Id,
+                    mediaTrack.Title,
+                    mediaTrack.Artist);
     }
 
     private static bool HasTrackChanged(
@@ -2086,7 +2454,9 @@ internal sealed class QQMusicPlayerAdapter :
             next?.Album,
             next?.CoverUrl,
             snapshot.NextSource,
-            snapshot.NextObservation);
+            snapshot.NextObservation,
+            snapshot.NextGuardState.ToString(),
+            snapshot.NextGuardId.ToString());
     }
 
     private static string Normalize(string value)
@@ -2115,6 +2485,12 @@ internal sealed class QQMusicPlayerAdapter :
         string Verification,
         string? Error,
         string? FailureCode);
+
+    private sealed record WrongNextRecoveryResult(
+        bool Verified,
+        string Message,
+        PlayerSnapshot Snapshot,
+        bool LateRecoveryTargetRecorded = false);
 
     private sealed record SingleInstanceSendResult(
         bool Sent,

@@ -10,14 +10,15 @@ namespace UnifiedPlayerControlPoc;
 internal sealed class QQMusicAudioMuteScope : IDisposable
 {
     private const int AudioSessionStateActive = 1;
-    private readonly List<AudioSession> _sessions;
+    private const uint DeviceStateActive = 0x1;
+    private readonly List<QQMusicAudioSessionHandle> _sessions;
     private readonly int _activeSessionCount;
     private Guid _eventContext = Guid.NewGuid();
     private bool _muteApplied;
     private bool _disposed;
 
     private QQMusicAudioMuteScope(
-        List<AudioSession> sessions,
+        List<QQMusicAudioSessionHandle> sessions,
         string captureError,
         int activeSessionCount)
     {
@@ -37,84 +38,89 @@ internal sealed class QQMusicAudioMuteScope : IDisposable
     public static QQMusicAudioMuteScope Capture(
         int? expectedProcessId = null)
     {
-        var sessions = new List<AudioSession>();
-        var activeSessionCount = 0;
-        var expectedProcess = expectedProcessId is > 0
-            ? checked((uint)expectedProcessId.Value)
-            : (uint?)null;
+        var endpoints = new List<IQQMusicAudioEndpoint>();
+        var endpointErrors = new List<string>();
         try
         {
             object deviceEnumeratorObject =
                 new MMDeviceEnumeratorComObject();
             var deviceEnumerator =
                 (IMMDeviceEnumerator)deviceEnumeratorObject;
-            var result = deviceEnumerator.GetDefaultAudioEndpoint(
+            var result = deviceEnumerator.EnumAudioEndpoints(
                 EDataFlow.Render,
-                ERole.Multimedia,
-                out var device);
+                DeviceStateActive,
+                out var deviceCollection);
             Marshal.ThrowExceptionForHR(result);
-
-            var sessionManagerId = typeof(IAudioSessionManager2).GUID;
-            result = device.Activate(
-                ref sessionManagerId,
-                ClsContext.All,
-                0,
-                out var sessionManagerObject);
-            Marshal.ThrowExceptionForHR(result);
-
-            var sessionManager = (IAudioSessionManager2)sessionManagerObject;
-            result = sessionManager.GetSessionEnumerator(
-                out var sessionEnumerator);
-            Marshal.ThrowExceptionForHR(result);
-            result = sessionEnumerator.GetCount(out var sessionCount);
-            Marshal.ThrowExceptionForHR(result);
-
-            for (var index = 0; index < sessionCount; index++)
+            if (deviceCollection is null)
             {
-                if (sessionEnumerator.GetSession(
-                        index,
-                        out var sessionControl) < 0
-                    || sessionControl is not IAudioSessionControl2 control2
-                    || control2.GetProcessId(out var processId) < 0
-                    || !IsQqMusicProcess(processId)
-                    || expectedProcess.HasValue
-                        && processId != expectedProcess.Value)
-                {
-                    continue;
-                }
-
-                var isActive = control2.GetState(out var sessionState) >= 0
-                    && IsActiveAudioSessionState(sessionState);
-                if (isActive)
-                {
-                    activeSessionCount++;
-                }
-
-                if (sessionControl is not ISimpleAudioVolume volume
-                    || volume.GetMute(out var wasMuted) < 0)
-                {
-                    continue;
-                }
-
-                sessions.Add(new AudioSession(
-                    sessionControl,
-                    volume,
-                    wasMuted,
-                    isActive));
+                throw new InvalidOperationException(
+                    "Windows 未返回活动渲染音频端点集合。");
             }
 
-            return new QQMusicAudioMuteScope(
-                sessions,
-                string.Empty,
-                activeSessionCount);
+            result = deviceCollection.GetCount(out var deviceCount);
+            Marshal.ThrowExceptionForHR(result);
+            for (uint index = 0; index < deviceCount; index++)
+            {
+                try
+                {
+                    result = deviceCollection.Item(index, out var device);
+                    Marshal.ThrowExceptionForHR(result);
+                    endpoints.Add(
+                        new WindowsAudioEndpoint(
+                            $"RenderEndpoint[{index}]",
+                            device));
+                }
+                catch (Exception exception)
+                {
+                    endpointErrors.Add(
+                        $"RenderEndpoint[{index}]: "
+                        + $"{exception.GetType().Name}: {exception.Message}");
+                }
+            }
+
+            var capture = QQMusicAudioSessionCapturePolicy.Capture(
+                endpoints,
+                expectedProcessId,
+                IsQqMusicProcess);
+            return FromCaptureResult(
+                capture,
+                CombineErrors(endpointErrors, capture.CaptureError));
         }
         catch (Exception exception)
         {
+            endpointErrors.Add(
+                $"{exception.GetType().Name}: {exception.Message}");
             return new QQMusicAudioMuteScope(
-                sessions,
-                $"{exception.GetType().Name}: {exception.Message}",
-                activeSessionCount);
+                [],
+                string.Join("; ", endpointErrors),
+                0);
         }
+    }
+
+    internal static QQMusicAudioMuteScope FromCaptureResult(
+        QQMusicAudioCaptureResult capture,
+        string? captureErrorOverride = null)
+    {
+        ArgumentNullException.ThrowIfNull(capture);
+        return new QQMusicAudioMuteScope(
+            new List<QQMusicAudioSessionHandle>(capture.Sessions),
+            captureErrorOverride ?? capture.CaptureError,
+            capture.ActiveSessionCount);
+    }
+
+    private static string CombineErrors(
+        IEnumerable<string> first,
+        string second)
+    {
+        var errors = first
+            .Where(error => !string.IsNullOrWhiteSpace(error))
+            .ToList();
+        if (!string.IsNullOrWhiteSpace(second))
+        {
+            errors.Add(second);
+        }
+
+        return string.Join("; ", errors);
     }
 
     public bool Mute()
@@ -229,11 +235,160 @@ internal sealed class QQMusicAudioMuteScope : IDisposable
     internal static bool IsActiveAudioSessionState(int state) =>
         state == AudioSessionStateActive;
 
-    private sealed record AudioSession(
-        IAudioSessionControl SessionControl,
-        ISimpleAudioVolume Volume,
-        bool WasMuted,
-        bool IsActive);
+    private sealed class WindowsAudioEndpoint : IQQMusicAudioEndpoint
+    {
+        private readonly IMMDevice _device;
+
+        internal WindowsAudioEndpoint(
+            string description,
+            IMMDevice device)
+        {
+            Description = description;
+            _device = device;
+        }
+
+        public string Description { get; }
+
+        public bool TryGetSessions(
+            out IReadOnlyList<IQQMusicAudioSession> sessions,
+            out string error)
+        {
+            var captured = new List<IQQMusicAudioSession>();
+            var errors = new List<string>();
+            try
+            {
+                var sessionManagerId = typeof(IAudioSessionManager2).GUID;
+                var result = _device.Activate(
+                    ref sessionManagerId,
+                    ClsContext.All,
+                    0,
+                    out var sessionManagerObject);
+                Marshal.ThrowExceptionForHR(result);
+
+                var sessionManager =
+                    (IAudioSessionManager2)sessionManagerObject;
+                result = sessionManager.GetSessionEnumerator(
+                    out var sessionEnumerator);
+                Marshal.ThrowExceptionForHR(result);
+                result = sessionEnumerator.GetCount(out var sessionCount);
+                Marshal.ThrowExceptionForHR(result);
+
+                for (var index = 0; index < sessionCount; index++)
+                {
+                    try
+                    {
+                        result = sessionEnumerator.GetSession(
+                            index,
+                            out var sessionControl);
+                        if (result < 0)
+                        {
+                            errors.Add(
+                                $"会话[{index}] HRESULT=0x{result:X8}");
+                            continue;
+                        }
+
+                        if (sessionControl
+                            is not IAudioSessionControl2 control2)
+                        {
+                            errors.Add($"会话[{index}] 不支持 IAudioSessionControl2。");
+                            continue;
+                        }
+
+                        result = control2.GetProcessId(out var processId);
+                        if (result < 0)
+                        {
+                            errors.Add(
+                                $"会话[{index}] 获取进程 ID 失败，"
+                                + $"HRESULT=0x{result:X8}");
+                            continue;
+                        }
+
+                        var stateResult =
+                            control2.GetState(out var sessionState);
+                        var isActive = stateResult >= 0
+                            && IsActiveAudioSessionState(sessionState);
+                        captured.Add(
+                            new WindowsAudioSession(
+                                sessionControl,
+                                processId,
+                                isActive));
+                    }
+                    catch (Exception exception)
+                    {
+                        errors.Add(
+                            $"会话[{index}]：{exception.GetType().Name}: "
+                            + exception.Message);
+                    }
+                }
+
+                sessions = captured;
+                error = string.Join("; ", errors);
+                return true;
+            }
+            catch (Exception exception)
+            {
+                sessions = captured;
+                error = $"{exception.GetType().Name}: {exception.Message}";
+                return false;
+            }
+        }
+    }
+
+    private sealed class WindowsAudioSession : IQQMusicAudioSession
+    {
+        private readonly IAudioSessionControl _sessionControl;
+
+        internal WindowsAudioSession(
+            IAudioSessionControl sessionControl,
+            uint processId,
+            bool isActive)
+        {
+            _sessionControl = sessionControl;
+            ProcessId = processId;
+            IsActive = isActive;
+        }
+
+        public uint ProcessId { get; }
+
+        public bool IsActive { get; }
+
+        public bool TryGetVolume(
+            out IQQMusicAudioVolume volume,
+            out bool wasMuted)
+        {
+            volume = null!;
+            wasMuted = false;
+            if (_sessionControl is not ISimpleAudioVolume simple
+                || simple.GetMute(out wasMuted) < 0)
+            {
+                return false;
+            }
+
+            volume = new WindowsAudioVolume(_sessionControl, simple);
+            return true;
+        }
+    }
+
+    private sealed class WindowsAudioVolume : IQQMusicAudioVolume
+    {
+        private readonly IAudioSessionControl _sessionControl;
+        private readonly ISimpleAudioVolume _volume;
+
+        internal WindowsAudioVolume(
+            IAudioSessionControl sessionControl,
+            ISimpleAudioVolume volume)
+        {
+            _sessionControl = sessionControl;
+            _volume = volume;
+        }
+
+        public int SetMute(bool mute, ref Guid eventContext)
+        {
+            var result = _volume.SetMute(mute, ref eventContext);
+            GC.KeepAlive(_sessionControl);
+            return result;
+        }
+    }
 
     private enum EDataFlow
     {
@@ -270,7 +425,7 @@ internal sealed class QQMusicAudioMuteScope : IDisposable
         int EnumAudioEndpoints(
             EDataFlow dataFlow,
             uint stateMask,
-            out nint devices);
+            out IMMDeviceCollection devices);
 
         [PreserveSig]
         int GetDefaultAudioEndpoint(
@@ -288,6 +443,20 @@ internal sealed class QQMusicAudioMuteScope : IDisposable
 
         [PreserveSig]
         int UnregisterEndpointNotificationCallback(nint client);
+    }
+
+    [ComImport]
+    [Guid("0BD7A1BE-7A1A-44DB-8397-CC5392387B5E")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IMMDeviceCollection
+    {
+        [PreserveSig]
+        int GetCount(out uint deviceCount);
+
+        [PreserveSig]
+        int Item(
+            uint deviceIndex,
+            out IMMDevice device);
     }
 
     [ComImport]

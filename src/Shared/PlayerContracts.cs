@@ -23,6 +23,16 @@ internal enum OperationOutcome
     Indeterminate
 }
 
+internal enum NextGuardState
+{
+    None,
+    Armed,
+    WaitingLateTarget,
+    Completed,
+    TerminalFailure,
+    Expired
+}
+
 internal sealed record PlayerCapabilities(
     bool Search,
     bool PlaySelected,
@@ -57,7 +67,9 @@ internal sealed record PlayerSnapshot(
     PlayerTrack? Next = null,
     string NextSource = "",
     string? NextObservation = null,
-    bool PlaybackAnchorReady = false);
+    bool PlaybackAnchorReady = false,
+    NextGuardState NextGuardState = NextGuardState.None,
+    long NextGuardId = 0);
 
 internal sealed record PlayerOperationResult(
     OperationOutcome Outcome,

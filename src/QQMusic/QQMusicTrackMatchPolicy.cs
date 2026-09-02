@@ -10,6 +10,9 @@ namespace UnifiedPlayerControlPoc;
 /// </summary>
 internal static class QQMusicTrackMatchPolicy
 {
+    private static readonly char[] ArtistSeparators =
+        ['、', '，', ',', ';', '；', '/', '&'];
+
     private static readonly Regex InstrumentalSuffix = new(
         @"\((?:纯音乐|inst\.?|instrumental)\)$",
         RegexOptions.IgnoreCase
@@ -32,6 +35,70 @@ internal static class QQMusicTrackMatchPolicy
         return !string.IsNullOrWhiteSpace(normalizedFirstArtist)
             && !string.IsNullOrWhiteSpace(normalizedSecondArtist)
             && normalizedFirstArtist == normalizedSecondArtist;
+    }
+
+    /// <summary>
+    /// Matches only metadata updates for one already-observed QQ track. The
+    /// title remains exact after normalization; artist metadata may gain or
+    /// lose collaborators while QQ fills its session fields, but it must not
+    /// introduce a disjoint artist token. This deliberately does not share
+    /// the instrumental-title aliases or relaxed artist rule used here with
+    /// strict target matching.
+    /// </summary>
+    internal static bool ObservationMetadataRepresentsSameSong(
+        string? firstTitle,
+        string? firstArtist,
+        string? secondTitle,
+        string? secondArtist)
+    {
+        var normalizedFirstTitle = NormalizeText(firstTitle);
+        var normalizedSecondTitle = NormalizeText(secondTitle);
+        if (string.IsNullOrWhiteSpace(normalizedFirstTitle)
+            || normalizedFirstTitle != normalizedSecondTitle)
+        {
+            return false;
+        }
+
+        var firstArtists = TokenizeArtist(firstArtist);
+        var secondArtists = TokenizeArtist(secondArtist);
+        if (firstArtists.Count == 0 || secondArtists.Count == 0)
+        {
+            return false;
+        }
+
+        return firstArtists.SetEquals(secondArtists)
+            || firstArtists.IsSubsetOf(secondArtists)
+            || secondArtists.IsSubsetOf(firstArtists);
+    }
+
+    /// <summary>
+    /// Applies the narrow observation rule to complete player tracks. A
+    /// stable native ID is authoritative when both observations have one:
+    /// equal IDs are the same track even while metadata is incomplete, while
+    /// different IDs cannot be collapsed into an artist/title update.
+    /// </summary>
+    internal static bool TracksRepresentSameObservation(
+        string? firstId,
+        string? firstTitle,
+        string? firstArtist,
+        string? secondId,
+        string? secondTitle,
+        string? secondArtist)
+    {
+        var normalizedFirstId = firstId?.Trim() ?? string.Empty;
+        var normalizedSecondId = secondId?.Trim() ?? string.Empty;
+        var firstHasStableId = IsStableTrackId(normalizedFirstId);
+        var secondHasStableId = IsStableTrackId(normalizedSecondId);
+        if (firstHasStableId && secondHasStableId)
+        {
+            return normalizedFirstId == normalizedSecondId;
+        }
+
+        return ObservationMetadataRepresentsSameSong(
+            firstTitle,
+            firstArtist,
+            secondTitle,
+            secondArtist);
     }
 
     internal static bool TracksRepresentSameSong(
@@ -106,6 +173,14 @@ internal static class QQMusicTrackMatchPolicy
             .Replace(';', '/')
             .Replace('；', '/')
             .Replace('&', '/');
+    }
+
+    private static HashSet<string> TokenizeArtist(string? value)
+    {
+        return NormalizeText(value)
+            .Split(ArtistSeparators, StringSplitOptions.RemoveEmptyEntries)
+            .Where(token => !string.IsNullOrWhiteSpace(token))
+            .ToHashSet(StringComparer.Ordinal);
     }
 
     private static string NormalizeText(string? value)

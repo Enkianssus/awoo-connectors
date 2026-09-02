@@ -20,6 +20,8 @@
              Link="QQMusicNativeController.cs" />
     <Compile Include="..\..\src\QQMusic\QQMusicAudioMuteScope.cs"
              Link="QQMusicAudioMuteScope.cs" />
+    <Compile Include="..\..\src\QQMusic\QQMusicAudioSessionCapturePolicy.cs"
+             Link="QQMusicAudioSessionCapturePolicy.cs" />
     <Compile Include="..\..\src\QQMusic\QQMusicPlaybackAnchorPolicy.cs"
              Link="QQMusicPlaybackAnchorPolicy.cs" />
     <Compile Include="..\..\src\Shared\PlayerContracts.cs"
