@@ -31,6 +31,13 @@ the host playlist instead of rebuilding or appending to it. The mute/pause guard
 remains active until the requested track is confirmed, so a failed native insert
 does not silently fall back to the queue-breaking `/playbysongid` path.
 
+QQ Music profile pack 1.3.0 adds an external QQ Music 22.61 profile, validated with
+the unchanged released 22.60.2 connector. This compatibility update uses a small
+signed profile pack, not a replacement connector executable. The profile must
+be available before connector startup; reconnect after the core downloads it.
+See [22.61 validation](docs/QQMUSIC_22_61_VALIDATION.md) for the live-test results,
+the conservative insertion response, and the current core's offline limitation.
+
 The QQ audio-session guard enumerates every active Windows Render endpoint, so QQ
 Music routed to a non-default output device still contributes playback evidence.
 An unavailable endpoint is reported diagnostically and does not prevent other

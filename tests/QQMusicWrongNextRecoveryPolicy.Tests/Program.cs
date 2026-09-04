@@ -126,7 +126,8 @@ var adapterSource = File.ReadAllText(
         repositoryDirectory.FullName,
         "src",
         "QQMusic",
-        "QQMusicPlayerAdapter.cs"));
+        "QQMusicPlayerAdapter.cs"))
+    .ReplaceLineEndings("\n");
 var recoveryStart = adapterSource.IndexOf(
     "private async Task<WrongNextRecoveryResult>",
     StringComparison.Ordinal);

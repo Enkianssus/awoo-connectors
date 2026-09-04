@@ -71,6 +71,26 @@ $expectedProfiles = @(
             getCategoryCountRva = '0x00509A60'
             songItemSize = '0xA0'
         }
+    },
+    @{
+        Version = '22.61'
+        Fields = @{
+            fileVersion = '22.61'
+            clientSha256 = 'D42A800E2110B27C2D94DBB1D78AB1A9DDDA2BBDA3E623C5EEBB980AF92F9B29'
+            commonSha256 = '15190F1D87B5B3853EF47F943F333FAD9E8D51277ADFD56AC332EABBDF8FC14D'
+            singleSongPlayDispatchRva = '0x004A7934'
+            expectedPlayDispatchBytes = 'E8 57 8D 16 00'
+            getCatManagerRva = '0x0000F0ED'
+            getQqUinExRva = '0x0002E1E5'
+            songItemConstructorRva = '0x0004B8D0'
+            songItemDestructorRva = '0x0004B410'
+            addSongsRva = '0x00459280'
+            hiddenCategoryIdRva = '0x00C5D1C8'
+            getListRootRva = '0x006332F0'
+            getListHelperRva = '0x00633450'
+            getCategoryCountRva = '0x00509FB0'
+            songItemSize = '0xA0'
+        }
     }
 )
 foreach ($expectedProfile in $expectedProfiles) {
