@@ -55,6 +55,23 @@ jobs:
           if ($version -notmatch $versionPattern) {
             throw "Invalid $id connector version: $version"
           }
+          if ($id -eq 'qqmusic') {
+            $parts = $version -split '\.'
+            $playerBranch = "$($parts[0]).$($parts[1])"
+            [xml]$project = Get-Content 'src/QQMusic/BiliNCM.Connector.QQMusic.csproj'
+            $projectVersion = [string]$project.Project.PropertyGroup.Version
+            if ($projectVersion -ne $version) {
+              throw "QQ Music tag $version must equal project version $projectVersion"
+            }
+            $profilePath = "profiles/qqmusic/$playerBranch.json"
+            if (-not (Test-Path -LiteralPath $profilePath)) {
+              throw "QQ Music connector $version requires exact profile $profilePath"
+            }
+            $profile = Get-Content -Raw -Encoding UTF8 $profilePath | ConvertFrom-Json
+            if ([string]$profile.fileVersion -ne $playerBranch) {
+              throw "QQ Music profile fileVersion must equal tag branch $playerBranch"
+            }
+          }
           $frameworkAsset = "awoo-connector-$id-$version-$runtime-framework-dependent.zip"
           $assemblyVersion = $version
           if ($id -eq 'netease') {
@@ -135,6 +152,25 @@ jobs:
           $frameworkAssembly = "$frameworkOutput/Awoo.Connector.$projectName.dll"
           if (-not (Test-Path $frameworkExecutable) -or -not (Test-Path $frameworkAssembly)) {
             throw 'Framework-dependent publish did not contain its apphost and managed entry assembly.'
+          }
+
+          if ($id -eq 'qqmusic') {
+            $parts = $version -split '\.'
+            $playerBranch = "$($parts[0]).$($parts[1])"
+            $sourceProfile = "profiles/qqmusic/$playerBranch.json"
+            $packagedProfile = Join-Path $frameworkOutput "profiles\qqmusic\$playerBranch.json"
+            if (-not (Test-Path -LiteralPath $packagedProfile)) {
+              throw "QQ Music package must contain exact profile $playerBranch.json"
+            }
+            $packagedProfileDocument = Get-Content -Raw -Encoding UTF8 $packagedProfile | ConvertFrom-Json
+            if ([string]$packagedProfileDocument.fileVersion -ne $playerBranch) {
+              throw "Packaged QQ Music profile fileVersion must equal tag branch $playerBranch"
+            }
+            $sourceHash = (Get-FileHash -Algorithm SHA256 $sourceProfile).Hash
+            $packagedHash = (Get-FileHash -Algorithm SHA256 $packagedProfile).Hash
+            if ($packagedHash -ne $sourceHash) {
+              throw "Packaged QQ Music profile does not match source profile $sourceProfile"
+            }
           }
 
       - name: Set up .NET x86 for connector smoke test

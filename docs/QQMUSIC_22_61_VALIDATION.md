@@ -12,9 +12,11 @@ and post-release download/install checks are separate release gates.
   `BILINCM_QQMUSIC_PROFILE_DIR` before process startup.
 - Both DLL SHA-256 values and the exact file version must match. Unknown DLLs
   remain rejected; this is not a wildcard or runtime pattern-scan bypass.
-- No production source, connector version, protocol, or core file was changed.
+- The live test changed no runtime source, protocol, or core file. The subsequent
+  connector 22.61.1 release updates connector metadata and bundles this same
+  profile so the connector version follows the QQ 22.61 player branch.
 
-The published ZIP's SHA-256 was
+The published 22.60.2 ZIP used by this live test had SHA-256
 `fbea5a6cd20d3f466937f7494e5b2b3afae662a6cbfbf6204d255f5dd9102685`.
 Its published checksum and Ed25519 signature were verified against the repository
 public key before testing. The extracted package and its bundled profiles were
@@ -97,11 +99,11 @@ are unchanged.
 
 ## Delivery and offline limitation
 
-Publish the separately versioned signed QQ profile pack after explicit release
-authorization. Do not replace the existing signed 22.60.2 binary assets or bump
-the binary merely to deliver this JSON. After publication, verify the profile
-catalog, signatures, public downloads and installation through the current core.
-Those gates must pass before the profile release is reported as complete.
+Profile pack 1.3.0 provides the separately versioned signed external delivery.
+Do not replace its immutable assets or the existing signed 22.60.2 binary assets.
+Connector 22.61.1 is a new release that follows the QQ 22.61 player branch and
+bundles the same validated JSON. Its release must independently pass the v2
+Catalog, signature, public download and current-core installation gates.
 
 The current core requests the profile catalog when launching the QQ connector,
 then passes the verified profile directory. The loader caches its first read,
@@ -110,5 +112,7 @@ so an already running connector must restart to see new profiles.
 The current core's catalog-fetch failure path falls back to bundled connector
 profiles instead of using its cached external profile directory. An offline
 launch/reconnect with 22.60.2 may therefore lack 22.61 support even after a prior
-successful profile download. This pre-existing core issue was not modified here;
-profile-only delivery must not be described as guaranteed offline compatibility.
+successful profile download. Connector 22.61.1 embeds `22.61.json`, so once that
+connector is installed it does not depend on an online profile fetch for this
+exact build. The pre-existing cached-profile fallback issue remains relevant to
+profile-only delivery.

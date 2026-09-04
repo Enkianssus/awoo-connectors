@@ -2,11 +2,15 @@ $ErrorActionPreference = 'Stop'
 
 $transportPath = Join-Path $PSScriptRoot '..\src\QQMusic\QQMusicNativeNextTransport.cs'
 $projectPath = Join-Path $PSScriptRoot '..\src\QQMusic\BiliNCM.Connector.QQMusic.csproj'
+$adapterPath = Join-Path $PSScriptRoot '..\src\QQMusic\QQMusicPlayerAdapter.cs'
+$catalogScriptPath = Join-Path $PSScriptRoot '..\scripts\update-catalog-v2.mjs'
 
 $transport = [IO.File]::ReadAllText(
     (Resolve-Path $transportPath),
     [Text.Encoding]::UTF8)
 $project = [xml](Get-Content -Raw -Encoding UTF8 $projectPath)
+$adapter = Get-Content -Raw -Encoding UTF8 $adapterPath
+$catalogScript = Get-Content -Raw -Encoding UTF8 $catalogScriptPath
 
 $officialCallShape = '(?s)emitter\.Bytes\(0x8B, 0xCE, 0x8D, 0x97\);.*?' +
     'emitter\.Byte\(0x68\);\s*' +
@@ -103,8 +107,14 @@ foreach ($expectedProfile in $expectedProfiles) {
     }
 }
 
-if ([string]$project.Project.PropertyGroup.Version -ne '22.60.2') {
-    throw 'QQ Music connector version must follow the tested QQ Music 22.60 branch.'
+if ([string]$project.Project.PropertyGroup.Version -ne '22.61.1') {
+    throw 'QQ Music connector version must follow the tested QQ Music 22.61 branch.'
+}
+if ($adapter -notmatch '22\.22 / 22\.41 / 22\.51 / 22\.52 / 22\.60 / 22\.61') {
+    throw 'QQ Music adapter must advertise the complete tested player list through 22.61.'
+}
+if ($catalogScript -notmatch "testedPlayerVersion: '22\.22 / 22\.41 / 22\.51 / 22\.52 / 22\.60 / 22\.61'") {
+    throw 'QQ Music v2 catalog metadata must advertise the complete tested player list through 22.61.'
 }
 
 Write-Output 'QQMusicNativeNextTransportPolicy.Tests passed.'
