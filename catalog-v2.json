@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-09-04T18:55:26.521Z",
+  "generatedAt": "2026-09-09T15:57:05.670Z",
   "repository": "Enkianssus/awoo-connectors",
   "publicKeyId": "bilincm-connectors-2026-01",
   "connectors": {
@@ -50,21 +50,21 @@
       "id": "qqmusic",
       "name": "QQ音乐",
       "channel": "stable",
-      "version": "22.61.1",
+      "version": "22.61.2",
       "protocolVersion": 1,
-      "minimumCoreVersion": "1.1.10",
+      "minimumCoreVersion": "1.2.1",
       "playerVersionPolicy": "22.*",
-      "testedPlayerVersion": "22.22 / 22.41 / 22.51 / 22.52 / 22.60 / 22.61",
-      "publishedAt": "2026-09-04T18:55:26.521Z",
+      "testedPlayerVersion": "22.61",
+      "publishedAt": "2026-09-09T15:57:05.670Z",
       "package": {
         "deployment": "framework-dependent",
         "runtime": "win-x86",
         "runtimeChannel": "8.0",
-        "asset": "awoo-connector-qqmusic-22.61.1-win-x86-framework-dependent.zip",
-        "size": 6795490,
-        "sha256": "2a91210c23972fbffd8aeaf0ace89ed5b102f963823c3fc73f5ab15a4d1de4c8",
-        "signature": "aLL9HdVg4MpwQyRR3anXakG5TqU9EpNwHpz01Dw2+Pym/TVmTDNMk/XhgKInipQXEnqgo4DbcIvUSQgiUdgTAA==",
-        "downloadUrl": "https://app.enkianss.us/connectors/v2/download/qqmusic/22.61.1/awoo-connector-qqmusic-22.61.1-win-x86-framework-dependent.zip"
+        "asset": "awoo-connector-qqmusic-22.61.2-win-x86-framework-dependent.zip",
+        "size": 7231685,
+        "sha256": "bc17c2b512895f2c75892268ca0ea83266bca4e0dcc4dcf0a5e82dbe38d4eb56",
+        "signature": "nBm1BcibEFn4qJ+4DKN3SELVB6dSSJFm9zOhU9/2jAXAuB2KwMrUsPxX+hHrlowJ48Lnn5jePGEvZ49enMZKAg==",
+        "downloadUrl": "https://app.enkianss.us/connectors/v2/download/qqmusic/22.61.2/awoo-connector-qqmusic-22.61.2-win-x86-framework-dependent.zip"
       }
     },
     "folia": {
