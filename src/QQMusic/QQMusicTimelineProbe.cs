@@ -12,7 +12,8 @@ internal sealed record QQMusicTimelineSnapshot(
     TimeSpan ElapsedSinceUpdate,
     TimeSpan EstimatedPosition,
     TimeSpan EstimatedRemaining,
-    string EstimationSource);
+    string EstimationSource,
+    string MediaType = "");
 
 /// <summary>
 /// Uses the public Windows media-session timeline only as an early-warning
@@ -83,6 +84,21 @@ internal sealed class QQMusicTimelineProbe
                     candidate.SourceAppUserModelId.Contains(
                         "qqmusic",
                         StringComparison.OrdinalIgnoreCase));
+            return ReadSnapshot(session);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    // Event-monitor callers must use the same session as their metadata and
+    // event subscriptions. The parameterless entry point remains standalone.
+    internal QQMusicTimelineSnapshot? ReadSnapshot(
+        GlobalSystemMediaTransportControlsSession? session)
+    {
+        try
+        {
             if (session is null)
             {
                 return null;
@@ -110,12 +126,22 @@ internal sealed class QQMusicTimelineProbe
                 elapsedSinceUpdate,
                 estimatedPosition,
                 timeline.EndTime - estimatedPosition,
-                estimationSource);
+                estimationSource,
+                ReadMediaType(playback));
         }
         catch
         {
             return null;
         }
+    }
+
+    // Diagnostic only. A missing/unsupported type must not erase a valid
+    // timeline, and a reported value is not proof of music/MV ownership.
+    private static string ReadMediaType(
+        GlobalSystemMediaTransportControlsSessionPlaybackInfo playback)
+    {
+        try { return playback.PlaybackType?.ToString() ?? string.Empty; }
+        catch { return string.Empty; }
     }
 
     private (TimeSpan Position, string Source) EstimatePosition(

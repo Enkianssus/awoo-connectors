@@ -107,14 +107,14 @@ foreach ($expectedProfile in $expectedProfiles) {
     }
 }
 
-if ([string]$project.Project.PropertyGroup.Version -ne '22.61.1') {
+if ([string]$project.Project.PropertyGroup.Version -ne '22.61.2') {
     throw 'QQ Music connector version must follow the tested QQ Music 22.61 branch.'
 }
 if ($adapter -notmatch '22\.22 / 22\.41 / 22\.51 / 22\.52 / 22\.60 / 22\.61') {
     throw 'QQ Music adapter must advertise the complete tested player list through 22.61.'
 }
-if ($catalogScript -notmatch "testedPlayerVersion: '22\.22 / 22\.41 / 22\.51 / 22\.52 / 22\.60 / 22\.61'") {
-    throw 'QQ Music v2 catalog metadata must advertise the complete tested player list through 22.61.'
+if ($catalogScript -notmatch "testedPlayerVersion: '22\.61'") {
+    throw 'QQ Music v2 catalog metadata must advertise the tested default Web backend version.'
 }
 
 Write-Output 'QQMusicNativeNextTransportPolicy.Tests passed.'

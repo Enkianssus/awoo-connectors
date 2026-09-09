@@ -1,8 +1,8 @@
 const CORE_PROJECTS = {
   awoo: {
-    name: '嗷呜点歌机 1.1.x',
+    name: '嗷呜点歌机 1.1.x / 1.2.x',
     repo: 'Enkianssus/AwooMusicBot',
-    versionPrefix: '1.1.',
+    versionPrefixes: ['1.1.', '1.2.'],
     exeName: 'awoo-musicbot-win-Portable.zip',
     badge: '推荐 · 新架构',
     featured: true,
@@ -12,12 +12,12 @@ const CORE_PROJECTS = {
   bilincm: {
     name: 'BiliNCM 1.0.x（旧稳定版）',
     repo: 'Enkianssus/AwooMusicBot',
-    versionPrefix: '1.0.',
+    versionPrefixes: ['1.0.'],
     exeName: 'bilincm-win-Portable.zip',
     badge: '维护通道',
     featured: false,
     description:
-      '仅面向原有网易云使用流程，功能较少，但经过更长时间验证。继续接收 1.0.x 修复，不会自动升级到 1.1.x。'
+      '仅面向原有网易云使用流程，功能较少，但经过更长时间验证。继续接收 1.0.x 修复，不会自动升级到 1.1.x / 1.2.x。'
   }
 };
 
@@ -1564,7 +1564,7 @@ async function proxyCoreAsset(
   try {
     tag = await resolveLatestChannelTag(
       project.repo,
-      project.versionPrefix
+      project.versionPrefixes
     );
   } catch (error) {
     return jsonResponse(
@@ -1588,9 +1588,11 @@ async function proxyCoreAsset(
   );
 }
 
-async function resolveLatestChannelTag(repo, versionPrefix) {
+async function resolveLatestChannelTag(repo, versionPrefixes) {
+  // The allowed series are part of the cache key, so changing the channel
+  // cannot reuse a tag cached under the old 1.1-only selection policy.
   const cacheKey = new Request(
-    `https://release-channel-cache.invalid/${repo}/${versionPrefix}`
+    `https://release-channel-cache.invalid/${repo}/${versionPrefixes.join(',')}`
   );
   const cache = caches.default;
   const cached = await cache.match(cacheKey);
@@ -1601,14 +1603,14 @@ async function resolveLatestChannelTag(repo, versionPrefix) {
   let tag;
   let apiError;
   try {
-    tag = await resolveLatestChannelTagFromApi(repo, versionPrefix);
+    tag = await resolveLatestChannelTagFromApi(repo, versionPrefixes);
   } catch (error) {
     apiError = error;
   }
 
   if (!tag) {
     try {
-      tag = await resolveLatestChannelTagFromAtom(repo, versionPrefix);
+      tag = await resolveLatestChannelTagFromAtom(repo, versionPrefixes);
     } catch (atomError) {
       throw new Error(
         `${String(apiError?.message || apiError || 'GitHub API 查询失败')}；`
@@ -1628,7 +1630,7 @@ async function resolveLatestChannelTag(repo, versionPrefix) {
   return tag;
 }
 
-async function resolveLatestChannelTagFromApi(repo, versionPrefix) {
+async function resolveLatestChannelTagFromApi(repo, versionPrefixes) {
   const response = await fetch(
     `https://api.github.com/repos/${repo}/releases?per_page=50`,
     {
@@ -1650,15 +1652,15 @@ async function resolveLatestChannelTagFromApi(repo, versionPrefix) {
       && !release.prerelease
     )
     .map(release => String(release.tag_name || '')),
-    versionPrefix
+    versionPrefixes
   );
   if (!tag) {
-    throw new Error(`没有找到 ${versionPrefix}x 发布版本`);
+    throw new Error(`没有找到 ${versionPrefixes.map(prefix => `${prefix}x`).join(' / ')} 发布版本`);
   }
   return tag;
 }
 
-async function resolveLatestChannelTagFromAtom(repo, versionPrefix) {
+async function resolveLatestChannelTagFromAtom(repo, versionPrefixes) {
   const response = await fetch(
     `https://github.com/${repo}/releases.atom`,
     {
@@ -1677,22 +1679,20 @@ async function resolveLatestChannelTagFromAtom(repo, versionPrefix) {
     atom.matchAll(/\/releases\/tag\/([^"<]+)["<]/gi),
     match => decodeURIComponent(match[1])
   );
-  const tag = selectLatestStableChannelTag(tags, versionPrefix);
+  const tag = selectLatestStableChannelTag(tags, versionPrefixes);
   if (!tag) {
-    throw new Error(`没有找到 ${versionPrefix}x 发布版本`);
+    throw new Error(`没有找到 ${versionPrefixes.map(prefix => `${prefix}x`).join(' / ')} 发布版本`);
   }
   return tag;
 }
 
-function selectLatestStableChannelTag(tags, versionPrefix) {
-  const escapedPrefix = String(versionPrefix)
-    .replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const stableTag = new RegExp(
-    `^v${escapedPrefix}[0-9]+(?:\\.[0-9]+)*$`,
-    'i'
-  );
+function selectLatestStableChannelTag(tags, versionPrefixes) {
+  const stableTags = versionPrefixes.map(prefix => {
+    const escapedPrefix = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`^v${escapedPrefix}[0-9]+$`, 'i');
+  });
   return tags
-    .filter(tag => stableTag.test(String(tag)))
+    .filter(tag => stableTags.some(pattern => pattern.test(String(tag))))
     .sort((left, right) => compareSemanticVersions(right, left))[0]
     || null;
 }

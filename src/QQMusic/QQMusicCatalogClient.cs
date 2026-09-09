@@ -12,7 +12,8 @@ internal sealed record QQMusicCatalogSong(
     string Album,
     string AlbumMid,
     int DurationSeconds,
-    bool IsPlayable)
+    bool IsPlayable,
+    QQMusicWebMetadata? WebMetadata = null)
 {
     public string StableIdentity => $"{SongId}:{SongMid}:{SongType}";
 }
@@ -205,13 +206,14 @@ internal sealed class QQMusicCatalogClient : IDisposable
             songs.Add(new QQMusicCatalogSong(
                 songId,
                 songMid,
-                checked((int)ReadInt64(item, "songtype")),
+                QQMusicWebCatalogMetadata.ReadDisplaySongType(item, legacy: true),
                 title,
                 string.Join(" / ", singers),
                 ReadString(item, "albumname"),
                 ReadString(item, "albummid"),
-                checked((int)ReadInt64(item, "interval")),
-                true));
+                ReadDurationSeconds(item),
+                true,
+                QQMusicWebCatalogMetadata.FromLegacy(item)));
         }
 
         return songs;
@@ -270,13 +272,14 @@ internal sealed class QQMusicCatalogClient : IDisposable
         song = new QQMusicCatalogSong(
             songId,
             songMid,
-            checked((int)ReadInt64(item, "type")),
+            QQMusicWebCatalogMetadata.ReadDisplaySongType(item, legacy: false),
             title,
             string.Join(" / ", singers),
             album,
             albumMid,
-            checked((int)ReadInt64(item, "interval")),
-            playable);
+            ReadDurationSeconds(item),
+            playable,
+            QQMusicWebCatalogMetadata.FromModern(item));
         return true;
     }
 
@@ -340,5 +343,15 @@ internal sealed class QQMusicCatalogClient : IDisposable
             && property.TryGetInt64(out var value)
                 ? value
                 : 0;
+    }
+
+    private static int ReadDurationSeconds(JsonElement element)
+    {
+        // Display metadata may lack a duration; do not overflow and discard an
+        // otherwise usable native catalog row. WebMetadata validates separately.
+        return element.TryGetProperty("interval", out var interval)
+            && interval.ValueKind == JsonValueKind.Number
+            && interval.TryGetInt32(out var value)
+            && value >= 0 ? value : 0;
     }
 }

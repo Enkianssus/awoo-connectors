@@ -46,7 +46,7 @@
   `awoo-connector-{id}-{version}-{rid}-framework-dependent.zip`.
   Self-contained and `BiliNCM.*` compatibility archives are not built for v2.
 - `catalog-v2.json` is the forward catalog. Its `schemaVersion` is `2`, every
-  entry has `minimumCoreVersion = 1.1.10`, and its `package` object is the only
+  entry has `minimumCoreVersion >= 1.1.10`, and its `package` object is the only
   package field. `package.deployment` is `framework-dependent`; the entry has
   no legacy, self-contained or Awoo-full-package aliases.
 - Preserve `Awoo.Connector.*.exe` inside every v2 package. Already-installed
@@ -59,7 +59,9 @@
   `catalog-v2.json`; it must not modify the frozen v1 catalog.
 - Do not declare a release complete until the workflow, Release assets, v2
   Catalog bot commit, public v2 proxy, Range download, signature/hash, and
-  1.1.10 compatibility are verified. Old-core validation continues against
+  installation by a compatible current core are verified. QQ 22.61.2 requires
+  core 1.2.1 for its Web backend ownership and observation behavior; older cores
+  must be blocked by the catalog compatibility gate. Old-core validation continues against
   the frozen v1 catalog and already-published Releases.
 - Publish multiple connectors sequentially and wait for each v2 Catalog update;
   both workflows share the `connector-catalog` concurrency group.

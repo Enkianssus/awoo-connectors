@@ -460,6 +460,8 @@ using (var audioScope =
 }
 
 Console.WriteLine("QQ Music metadata policy tests passed.");
+await MediaSessionObservationTests.RunAsync();
+await MediaArtworkTests.RunAsync();
 
 sealed class FakeAudioVolume : IQQMusicAudioVolume
 {

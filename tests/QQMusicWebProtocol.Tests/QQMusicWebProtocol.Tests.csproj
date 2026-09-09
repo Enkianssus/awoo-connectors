@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <RuntimeIdentifier></RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
+    <PublishSingleFile>false</PublishSingleFile>
+    <EnableWindowsTargeting>false</EnableWindowsTargeting>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\..\src\QQMusic\QQMusicWebProtocol.cs"
+             Link="QQMusicWebProtocol.cs" />
+    <Compile Include="..\..\src\QQMusic\QQMusicWebCatalogMetadata.cs"
+             Link="QQMusicWebCatalogMetadata.cs" />
+    <Compile Include="..\..\src\QQMusic\QQMusicWebEndPolicy.cs"
+             Link="QQMusicWebEndPolicy.cs" />
+    <Compile Include="..\..\src\QQMusic\QQMusicWebGuardPolicy.cs"
+             Link="QQMusicWebGuardPolicy.cs" />
+    <Compile Include="..\..\src\QQMusic\QQMusicWebSubmissionPolicy.cs"
+             Link="QQMusicWebSubmissionPolicy.cs" />
+    <Compile Include="..\..\src\QQMusic\QQMusicWebSongDetails.cs"
+             Link="QQMusicWebSongDetails.cs" />
+    <Compile Include="..\..\src\QQMusic\QQMusicWebReceipt.cs"
+             Link="QQMusicWebReceipt.cs" />
+    <Compile Include="..\..\src\QQMusic\QQMusicWebHostPolicy.cs"
+             Link="QQMusicWebHostPolicy.cs" />
+    <Compile Include="..\..\src\QQMusic\QQMusicWebDrainPolicy.cs"
+             Link="QQMusicWebDrainPolicy.cs" />
+    <None Include="..\..\src\QQMusic\BiliNCM.Connector.QQMusic.csproj"
+          Link="QQMusic.production.csproj"
+          CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\src\QQMusic\QQMusicWebProtocol.cs"
+          Link="QQMusicWebProtocol.source.txt" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\src\QQMusic\QQMusicWebPlayTransport.cs"
+          Link="QQMusicWebPlayTransport.source.txt" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\src\QQMusic\QQMusicWebBridgeHost.cs"
+          Link="QQMusicWebBridgeHost.source.txt" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\src\QQMusic\QQMusicWebApiClient.cs"
+          Link="QQMusicWebApiClient.source.txt" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

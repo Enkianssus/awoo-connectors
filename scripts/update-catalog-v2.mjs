@@ -46,8 +46,10 @@ const supported = {
   },
   qqmusic: {
     name: 'QQ音乐',
+    // The Web backend needs the core's ownership/deferred-observation contract.
+    minimumCoreVersion: '1.2.1',
     playerVersionPolicy: '22.*',
-    testedPlayerVersion: '22.22 / 22.41 / 22.51 / 22.52 / 22.60 / 22.61',
+    testedPlayerVersion: '22.61',
     runtime: 'win-x86',
     versionPattern: /^\d+\.\d+\.\d+$/
   },
@@ -126,7 +128,7 @@ catalog.connectors[connectorId] = {
   channel: 'stable',
   version,
   protocolVersion: 1,
-  minimumCoreVersion: '1.1.10',
+  minimumCoreVersion: metadata.minimumCoreVersion || '1.1.10',
   playerVersionPolicy: metadata.playerVersionPolicy,
   testedPlayerVersion: metadata.testedPlayerVersion,
   publishedAt,

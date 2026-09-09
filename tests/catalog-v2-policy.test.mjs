@@ -36,7 +36,13 @@ assert.equal(v2Catalog.schemaVersion, 2);
 assert.equal(v2Catalog.repository, 'Enkianssus/awoo-connectors');
 assert.equal(v2Catalog.publicKeyId, 'bilincm-connectors-2026-01');
 for (const [id, entry] of Object.entries(v2Catalog.connectors)) {
-  assert.equal(entry.minimumCoreVersion, '1.1.10', `v2 ${id} core boundary`);
+  const parts = entry.version.split('.').map(Number);
+  const requiresWebCore = id === 'qqmusic' && (
+    parts[0] > 22 || (parts[0] === 22 && (
+      parts[1] > 61 || (parts[1] === 61 && parts[2] >= 2)
+    ))
+  );
+  assert.equal(entry.minimumCoreVersion, requiresWebCore ? '1.2.1' : '1.1.10', `v2 ${id} core boundary`);
   assert.ok(entry.package, `v2 ${id} must have a package`);
   assert.equal(entry.package.deployment, 'framework-dependent');
   assert.match(
@@ -122,6 +128,25 @@ try {
       + validAsset
   });
   assert.equal(Object.hasOwn(generated.connectors.kugou, 'awooPackage'), false);
+
+  for (const [id, version, runtime, expectedCore] of [
+    ['qqmusic', '22.61.2', 'win-x86', '1.2.1'],
+    ['netease', '3.1.38.205386.2', 'win-x64', '1.1.10'],
+    ['folia', '1.1.4', 'win-x86', '1.1.10']
+  ]) {
+    const generatedRun = spawnSync(process.execPath, [
+      generatorPath, id, version,
+      `awoo-connector-${id}-${version}-${runtime}-framework-dependent.zip`,
+      validHash, validSignature, '1234', runtime, '8.0'
+    ], { cwd: temporaryDirectory, encoding: 'utf8' });
+    assert.equal(generatedRun.status, 0, generatedRun.stderr || generatedRun.stdout);
+    const current = JSON.parse(fs.readFileSync(path.join(temporaryDirectory, 'catalog-v2.json'), 'utf8'));
+    assert.equal(current.connectors[id].minimumCoreVersion, expectedCore);
+    assert.equal(current.connectors[id].protocolVersion, 1);
+    assert.deepEqual(current.connectors.kugou, generated.connectors.kugou,
+      'publishing another connector must retain the unrelated catalog entry');
+    if (id === 'qqmusic') assert.equal(current.connectors[id].testedPlayerVersion, '22.61');
+  }
 
   const invalidRun = spawnSync(
     process.execPath,

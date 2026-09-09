@@ -12,11 +12,17 @@ archives, including self-contained packages, and old cores continue to use
 them. Existing Release Tags and assets are immutable and must not be deleted,
 replaced or repointed.
 
-`catalog-v2.json` is the forward channel. Its entries use
+`catalog-v2.json` is the forward channel. Its entries use at least
 `minimumCoreVersion: "1.1.10"` because the client must understand the v2
 catalog shape and the no-full-package failure behavior. The connector protocol
 itself remains protocol version 1; this is a distribution-contract boundary,
 not a protocol incompatibility.
+
+QQ Music 22.61.2 and later additionally require Awoo MusicBot 1.2.1 for the Web
+backend's playback-anchor, next-target ownership and deferred-observation
+behavior. The QQ catalog generator therefore uses `minimumCoreVersion: "1.2.1"`;
+the NetEase, KuGou and Folia generators remain at `1.1.10`. This is a real core
+behavior dependency, not a consequence of framework-dependent packaging.
 
 The public routes that must be provided by the download Worker are:
 

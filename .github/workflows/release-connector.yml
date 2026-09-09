@@ -127,6 +127,29 @@ jobs:
             throw "Unexpected Chromium net_error_list.h SHA-256: $actualSha256"
           }
 
+      - name: Validate QQ Web and native compatibility policies
+        if: steps.metadata.outputs.id == 'qqmusic'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $projects = @(
+            'QQMusicWebProtocol.Tests',
+            'QQMusicWebStatus.Tests',
+            'QQMusicWindowTitleParser.Tests',
+            'QQMusicWrongNextRecoveryPolicy.Tests',
+            'QQMusicExternalProfile.Tests'
+          )
+          foreach ($project in $projects) {
+            dotnet run --project "tests/$project/$project.csproj" -c Release
+            if ($LASTEXITCODE -ne 0) { throw "QQ test failed: $project" }
+          }
+          & ./tests/QQMusicWebBackendPolicy.Tests.ps1
+          & ./tests/QQMusicNativeWindowInspection.Tests.ps1
+          & ./tests/QQMusicPlaybackAnchorPolicy.Tests.ps1
+          & ./tests/QQMusicNativeNextTransportPolicy.Tests.ps1
+          node tests/catalog-v2-policy.test.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Catalog v2 policy tests failed.' }
+
       - name: Publish connector
         shell: pwsh
         run: |
@@ -155,6 +178,14 @@ jobs:
           }
 
           if ($id -eq 'qqmusic') {
+            $bridgeExecutable = Join-Path $frameworkOutput 'Awoo.QqWebBridge.exe'
+            if (-not (Test-Path -LiteralPath $bridgeExecutable)) {
+              throw 'QQ Web package is missing its isolated bridge apphost.'
+            }
+            if ((Get-FileHash -Algorithm SHA256 $bridgeExecutable).Hash -ne
+                (Get-FileHash -Algorithm SHA256 $frameworkExecutable).Hash) {
+              throw 'QQ Web bridge apphost must match the public connector apphost.'
+            }
             $parts = $version -split '\.'
             $playerBranch = "$($parts[0]).$($parts[1])"
             $sourceProfile = "profiles/qqmusic/$playerBranch.json"

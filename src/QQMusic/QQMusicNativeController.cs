@@ -18,52 +18,110 @@ internal sealed record QQMusicPlaybackState(
     string? Artist,
     long? WindowHandle,
     string? WindowTitle,
-    DateTimeOffset ObservedAt);
+    DateTimeOffset ObservedAt,
+    int? ProcessId = null);
 
 internal static class QQMusicNativeController
 {
     public static IReadOnlyList<QQMusicWindowInfo> InspectWindows()
     {
         var windows = new List<QQMusicWindowInfo>();
-        EnumWindows(
-            (handle, _) =>
-            {
-                GetWindowThreadProcessId(handle, out var processId);
-                if (processId == 0)
-                {
-                    return true;
-                }
+        Process[] processes;
+        try
+        {
+            // A fresh candidate snapshot avoids a process-name lookup for every
+            // desktop window. Neither process IDs nor window text are cached.
+            processes = Process.GetProcessesByName("QQMusic");
+        }
+        catch (Exception error) when (IsProcessInspectionFailure(error))
+        {
+            return windows;
+        }
 
+        try
+        {
+            var candidates = new Dictionary<int, (Process Process, string Name)>();
+            foreach (var process in processes)
+            {
                 try
                 {
-                    using var process = Process.GetProcessById(
-                        checked((int)processId));
-                    if (!process.ProcessName.Equals(
-                            "QQMusic",
-                            StringComparison.OrdinalIgnoreCase))
+                    var name = process.ProcessName;
+                    if (name.Equals("QQMusic", StringComparison.OrdinalIgnoreCase)
+                        && !process.HasExited)
+                    {
+                        candidates.TryAdd(process.Id, (process, name));
+                    }
+                }
+                catch (Exception error) when (IsProcessInspectionFailure(error))
+                {
+                    // An exited or inaccessible candidate is not a QQ window.
+                }
+            }
+
+            if (candidates.Count == 0)
+            {
+                return windows;
+            }
+
+            if (!EnumWindows(
+                (handle, _) =>
+                {
+                    GetWindowThreadProcessId(handle, out var processId);
+                    if (processId == 0 || processId > int.MaxValue
+                        || !candidates.TryGetValue((int)processId, out var candidate))
                     {
                         return true;
                     }
 
-                    windows.Add(new QQMusicWindowInfo(
-                        handle,
-                        checked((int)processId),
-                        process.ProcessName,
-                        ReadClassName(handle),
-                        ReadWindowText(handle),
-                        IsWindowVisible(handle)));
-                }
-                catch (ArgumentException)
-                {
-                    // The process exited while EnumWindows was running.
-                }
+                    try
+                    {
+                        if (candidate.Process.HasExited)
+                        {
+                            return true;
+                        }
 
-                return true;
-            },
-            0);
+                        var window = new QQMusicWindowInfo(
+                            handle,
+                            (int)processId,
+                            candidate.Name,
+                            ReadClassName(handle),
+                            ReadWindowText(handle),
+                            IsWindowVisible(handle));
+                        GetWindowThreadProcessId(handle, out var currentProcessId);
+                        if (currentProcessId == processId && !candidate.Process.HasExited)
+                        {
+                            windows.Add(window);
+                        }
+                    }
+                    catch (Exception error) when (IsProcessInspectionFailure(error))
+                    {
+                        // The candidate exited or became inaccessible during enumeration.
+                    }
 
-        return windows;
+                    return true;
+                },
+                0))
+            {
+                windows.Clear();
+            }
+
+            return windows;
+        }
+        finally
+        {
+            foreach (var process in processes)
+            {
+                process.Dispose();
+            }
+        }
     }
+
+    private static bool IsProcessInspectionFailure(Exception error) =>
+        error is ArgumentException
+            or InvalidOperationException
+            or System.ComponentModel.Win32Exception
+            or UnauthorizedAccessException
+            or NotSupportedException;
 
     public static QQMusicPlaybackState ReadPlaybackState()
     {
@@ -86,7 +144,8 @@ internal static class QQMusicNativeController
             parsed?.Artist,
             window.Handle,
             window.Title,
-            DateTimeOffset.Now);
+            DateTimeOffset.Now,
+            window.ProcessId);
     }
 
     private static QQMusicWindowInfo? FindMainWindow()
