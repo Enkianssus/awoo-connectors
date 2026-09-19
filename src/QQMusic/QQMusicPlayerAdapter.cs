@@ -167,8 +167,7 @@ internal sealed class QQMusicPlayerAdapter :
             QQMusicPlayerEvent? latest = null;
             while (subscription.Reader.TryRead(out var playerEvent))
             {
-                if (playerEvent.Kind != QQMusicEventKind.ArtworkChanged)
-                    latest = playerEvent;
+                latest = playerEvent;
             }
 
             // GSMTC commonly emits playback, timeline and media-property
@@ -177,13 +176,10 @@ internal sealed class QQMusicPlayerAdapter :
             await Task.Delay(15, cancellationToken).ConfigureAwait(false);
             while (subscription.Reader.TryRead(out var additionalEvent))
             {
-                if (additionalEvent.Kind != QQMusicEventKind.ArtworkChanged)
-                    latest = additionalEvent;
+                latest = additionalEvent;
             }
 
-            // Artwork completion is decorative, not new playback evidence.
-            // It must not mask a real event in the same batch either.
-            if (latest is null || Volatile.Read(ref _snapshotSuppressionDepth) > 0)
+            if (Volatile.Read(ref _snapshotSuppressionDepth) > 0)
             {
                 continue;
             }
@@ -1174,11 +1170,8 @@ internal sealed class QQMusicPlayerAdapter :
                     .AsTask();
                 while (subscription.Reader.TryRead(out var additionalEvent))
                 {
-                    if (additionalEvent.Kind != QQMusicEventKind.ArtworkChanged)
-                        playerEvent = additionalEvent;
+                    playerEvent = additionalEvent;
                 }
-                if (playerEvent.Kind == QQMusicEventKind.ArtworkChanged)
-                    continue;
 
                 if (playerEvent.Kind is QQMusicEventKind.Initialized
                     or QQMusicEventKind.SessionsChanged

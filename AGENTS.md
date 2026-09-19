@@ -59,9 +59,11 @@
   `catalog-v2.json`; it must not modify the frozen v1 catalog.
 - Do not declare a release complete until the workflow, Release assets, v2
   Catalog bot commit, public v2 proxy, Range download, signature/hash, and
-  installation by a compatible current core are verified. QQ 22.61.2 requires
-  core 1.2.1 for its Web backend ownership and observation behavior; older cores
-  must be blocked by the catalog compatibility gate. Old-core validation continues against
+  installation by a compatible current core are verified. QQ Web revisions
+  22.61.2–22.61.4 require core 1.2.1 for ownership and observation behavior;
+  preserve that historical boundary. QQ 22.61.5 restores the 22.61.1 native
+  implementation and uses the v2 core floor 1.1.10. Do not infer the backend or
+  minimum core from a permanent `>=22.61.2` threshold. Old-core validation continues against
   the frozen v1 catalog and already-published Releases.
 - Publish multiple connectors sequentially and wait for each v2 Catalog update;
   both workflows share the `connector-catalog` concurrency group.

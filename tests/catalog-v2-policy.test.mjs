@@ -36,12 +36,8 @@ assert.equal(v2Catalog.schemaVersion, 2);
 assert.equal(v2Catalog.repository, 'Enkianssus/awoo-connectors');
 assert.equal(v2Catalog.publicKeyId, 'bilincm-connectors-2026-01');
 for (const [id, entry] of Object.entries(v2Catalog.connectors)) {
-  const parts = entry.version.split('.').map(Number);
-  const requiresWebCore = id === 'qqmusic' && (
-    parts[0] > 22 || (parts[0] === 22 && (
-      parts[1] > 61 || (parts[1] === 61 && parts[2] >= 2)
-    ))
-  );
+  const requiresWebCore = id === 'qqmusic'
+    && ['22.61.2', '22.61.3', '22.61.4'].includes(entry.version);
   assert.equal(entry.minimumCoreVersion, requiresWebCore ? '1.2.1' : '1.1.10', `v2 ${id} core boundary`);
   assert.ok(entry.package, `v2 ${id} must have a package`);
   assert.equal(entry.package.deployment, 'framework-dependent');
@@ -73,6 +69,20 @@ assert.doesNotMatch(workflow, /legacyAsset|legacy_asset|legacyFramework/);
 assert.doesNotMatch(workflow, /--self-contained true/);
 assert.match(workflow, /frameworkAsset\.sig/);
 assert.match(workflow, /frameworkAsset\.sha256/);
+for (const suite of [
+  'QQMusicWindowTitleParser.Tests',
+  'QQMusicWrongNextRecoveryPolicy.Tests',
+  'QQMusicExternalProfile.Tests',
+  'ConnectorRuntimeShutdown.Tests',
+  'QQMusicPlaybackAnchorPolicy.Tests.ps1',
+  'QQMusicNativeNextTransportPolicy.Tests.ps1'
+]) assert.ok(workflow.includes(suite), `QQ native release validates ${suite}`);
+assert.doesNotMatch(workflow, /QQMusicWeb(?:Protocol|Status|BackendPolicy)\.Tests/);
+assert.doesNotMatch(workflow, /QQMusicNativeWindowInspection\.Tests/);
+assert.match(workflow, /Restored QQ native framework-dependent package must not contain/);
+assert.match(workflow, /@\('Awoo\.QqWebBridge\.exe', 'coreclr\.dll', 'hostfxr\.dll', 'clrjit\.dll'\)/);
+assert.match(workflow, /if \(Test-Path -LiteralPath \(Join-Path \$frameworkOutput \$forbiddenFile\)\)/);
+assert.match(workflow, /Packaged QQ Music profile does not match source profile/);
 
 const temporaryDirectory = fs.mkdtempSync(
   path.join(os.tmpdir(), 'awoo-connector-catalog-v2-')
@@ -129,8 +139,13 @@ try {
   });
   assert.equal(Object.hasOwn(generated.connectors.kugou, 'awooPackage'), false);
 
-  for (const [id, version, runtime, expectedCore] of [
-    ['qqmusic', '22.61.2', 'win-x86', '1.2.1'],
+  const nativeQqTestedVersions = '22.22 / 22.41 / 22.51 / 22.52 / 22.60 / 22.61';
+  for (const [id, version, runtime, expectedCore, expectedTested] of [
+    ['qqmusic', '22.61.1', 'win-x86', '1.1.10', nativeQqTestedVersions],
+    ['qqmusic', '22.61.2', 'win-x86', '1.2.1', '22.61'],
+    ['qqmusic', '22.61.3', 'win-x86', '1.2.1', '22.61'],
+    ['qqmusic', '22.61.4', 'win-x86', '1.2.1', '22.61'],
+    ['qqmusic', '22.61.5', 'win-x86', '1.1.10', nativeQqTestedVersions],
     ['netease', '3.1.38.205386.2', 'win-x64', '1.1.10'],
     ['folia', '1.1.4', 'win-x86', '1.1.10']
   ]) {
@@ -145,7 +160,12 @@ try {
     assert.equal(current.connectors[id].protocolVersion, 1);
     assert.deepEqual(current.connectors.kugou, generated.connectors.kugou,
       'publishing another connector must retain the unrelated catalog entry');
-    if (id === 'qqmusic') assert.equal(current.connectors[id].testedPlayerVersion, '22.61');
+    if (id === 'qqmusic') {
+      assert.equal(current.connectors[id].testedPlayerVersion, expectedTested);
+      assert.equal(current.connectors[id].playerVersionPolicy, '22.*');
+      assert.equal(current.connectors[id].version, version);
+      assert.equal(current.connectors[id].package.runtime, 'win-x86');
+    }
   }
 
   const invalidRun = spawnSync(

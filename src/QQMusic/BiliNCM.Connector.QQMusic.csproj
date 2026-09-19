@@ -3,36 +3,16 @@
     <OutputType>Exe</OutputType>
     <AssemblyName>Awoo.Connector.QQMusic</AssemblyName>
     <RootNamespace>UnifiedPlayerControlPoc</RootNamespace>
-    <Version>22.61.2</Version>
+    <Version>22.61.5</Version>
     <InformationalVersion>$(Version)</InformationalVersion>
-    <!-- Reduce repeated isolated-helper JIT without changing the Web transport,
-         private runtime or package shape. Explicit publish overrides still win. -->
-    <PublishReadyToRun Condition="'$(Configuration)' == 'Release' and '$(SelfContained)' == 'false' and '$(PublishSingleFile)' == 'false' and '$(PublishReadyToRun)' == ''">true</PublishReadyToRun>
   </PropertyGroup>
 
   <ItemGroup>
     <Compile Include="..\Shared\ConnectorRuntime.cs" Link="Shared\ConnectorRuntime.cs" />
-    <Compile Include="..\Shared\PlayerContracts.cs" Link="Shared\PlayerContracts.cs" />
+    <!-- Keep QQ's restored 22.61.1 contract without changing other connectors. -->
     <Content Include="..\..\profiles\qqmusic\*.json"
              Link="profiles\qqmusic\%(Filename)%(Extension)"
              CopyToOutputDirectory="PreserveNewest"
              CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
-
-  <!-- QQMusicApi treats any host path containing qqmusic.exe as in-player.
-       Keep the connector's public name; copy its apphost with a distinct name
-       for isolated external API calls. The embedded managed assembly name is
-       unchanged, so this needs no additional runtime/framework installation. -->
-  <Target Name="CopyQQWebBridgeBuildHost" AfterTargets="Build"
-          Condition="Exists('$(TargetDir)$(AssemblyName).exe')">
-    <Copy SourceFiles="$(TargetDir)$(AssemblyName).exe"
-          DestinationFiles="$(TargetDir)Awoo.QqWebBridge.exe"
-          SkipUnchangedFiles="true" />
-  </Target>
-  <Target Name="CopyQQWebBridgePublishHost" AfterTargets="Publish"
-          Condition="Exists('$(PublishDir)$(AssemblyName).exe')">
-    <Copy SourceFiles="$(PublishDir)$(AssemblyName).exe"
-          DestinationFiles="$(PublishDir)Awoo.QqWebBridge.exe"
-          SkipUnchangedFiles="true" />
-  </Target>
 </Project>

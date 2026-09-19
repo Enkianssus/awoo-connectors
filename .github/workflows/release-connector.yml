@@ -127,24 +127,21 @@ jobs:
             throw "Unexpected Chromium net_error_list.h SHA-256: $actualSha256"
           }
 
-      - name: Validate QQ Web and native compatibility policies
+      - name: Validate QQ native compatibility policies
         if: steps.metadata.outputs.id == 'qqmusic'
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $projects = @(
-            'QQMusicWebProtocol.Tests',
-            'QQMusicWebStatus.Tests',
             'QQMusicWindowTitleParser.Tests',
             'QQMusicWrongNextRecoveryPolicy.Tests',
-            'QQMusicExternalProfile.Tests'
+            'QQMusicExternalProfile.Tests',
+            'ConnectorRuntimeShutdown.Tests'
           )
           foreach ($project in $projects) {
             dotnet run --project "tests/$project/$project.csproj" -c Release
             if ($LASTEXITCODE -ne 0) { throw "QQ test failed: $project" }
           }
-          & ./tests/QQMusicWebBackendPolicy.Tests.ps1
-          & ./tests/QQMusicNativeWindowInspection.Tests.ps1
           & ./tests/QQMusicPlaybackAnchorPolicy.Tests.ps1
           & ./tests/QQMusicNativeNextTransportPolicy.Tests.ps1
           node tests/catalog-v2-policy.test.mjs
@@ -178,13 +175,10 @@ jobs:
           }
 
           if ($id -eq 'qqmusic') {
-            $bridgeExecutable = Join-Path $frameworkOutput 'Awoo.QqWebBridge.exe'
-            if (-not (Test-Path -LiteralPath $bridgeExecutable)) {
-              throw 'QQ Web package is missing its isolated bridge apphost.'
-            }
-            if ((Get-FileHash -Algorithm SHA256 $bridgeExecutable).Hash -ne
-                (Get-FileHash -Algorithm SHA256 $frameworkExecutable).Hash) {
-              throw 'QQ Web bridge apphost must match the public connector apphost.'
+            foreach ($forbiddenFile in @('Awoo.QqWebBridge.exe', 'coreclr.dll', 'hostfxr.dll', 'clrjit.dll')) {
+              if (Test-Path -LiteralPath (Join-Path $frameworkOutput $forbiddenFile)) {
+                throw "Restored QQ native framework-dependent package must not contain $forbiddenFile"
+              }
             }
             $parts = $version -split '\.'
             $playerBranch = "$($parts[0]).$($parts[1])"
@@ -387,6 +381,8 @@ jobs:
           git push origin main
 
       - name: Clean old connector R2 objects
+        # This release is authorized to upload new assets, not purge old caches.
+        if: github.ref_name != 'qqmusic-v22.61.5'
         shell: pwsh
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.ENKIANSSUS_CLOUDFLARE_API_TOKEN }}

@@ -10,14 +10,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- These two sources use test-only Windows.Media.Control fakes. The
-         regression executable never starts a real Windows media monitor. -->
-    <Compile Include="..\..\src\QQMusic\QQMusicEventMonitor.cs"
-             Link="QQMusicEventMonitor.cs" />
-    <Compile Include="..\..\src\QQMusic\QQMusicMediaArtwork.cs"
-             Link="QQMusicMediaArtwork.cs" />
-    <Compile Include="..\..\src\QQMusic\QQMusicTimelineProbe.cs"
-             Link="QQMusicTimelineProbe.cs" />
     <Compile Include="..\..\src\QQMusic\QQMusicAlbumArtwork.cs"
              Link="QQMusicAlbumArtwork.cs" />
     <Compile Include="..\..\src\QQMusic\QQMusicWindowTitleParser.cs"

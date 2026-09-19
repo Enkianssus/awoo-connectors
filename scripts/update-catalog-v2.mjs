@@ -46,10 +46,10 @@ const supported = {
   },
   qqmusic: {
     name: 'QQ音乐',
-    // The Web backend needs the core's ownership/deferred-observation contract.
-    minimumCoreVersion: '1.2.1',
+    // 22.61.5 restores the 22.61.1 native implementation and its core contract.
+    minimumCoreVersion: '1.1.10',
     playerVersionPolicy: '22.*',
-    testedPlayerVersion: '22.61',
+    testedPlayerVersion: '22.22 / 22.41 / 22.51 / 22.52 / 22.60 / 22.61',
     runtime: 'win-x86',
     versionPattern: /^\d+\.\d+\.\d+$/
   },
@@ -69,6 +69,10 @@ if (!metadata) {
 if (!metadata.versionPattern.test(version)) {
   throw new Error(`Invalid ${connectorId} connector version: ${version}`);
 }
+// Preserve the Web revisions' real core dependency without assuming that every
+// later revision uses that backend. New backend branches need an explicit review.
+const usesQqWebContract = connectorId === 'qqmusic'
+  && ['22.61.2', '22.61.3', '22.61.4'].includes(version);
 if (runtime !== metadata.runtime) {
   throw new Error(
     `${connectorId} must publish for ${metadata.runtime}, received ${runtime}`
@@ -128,9 +132,9 @@ catalog.connectors[connectorId] = {
   channel: 'stable',
   version,
   protocolVersion: 1,
-  minimumCoreVersion: metadata.minimumCoreVersion || '1.1.10',
+  minimumCoreVersion: usesQqWebContract ? '1.2.1' : metadata.minimumCoreVersion || '1.1.10',
   playerVersionPolicy: metadata.playerVersionPolicy,
-  testedPlayerVersion: metadata.testedPlayerVersion,
+  testedPlayerVersion: usesQqWebContract ? '22.61' : metadata.testedPlayerVersion,
   publishedAt,
   package: {
     deployment: 'framework-dependent',

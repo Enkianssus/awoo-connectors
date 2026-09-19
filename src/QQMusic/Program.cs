@@ -4,12 +4,6 @@ internal static class Program
 {
     private static async Task<int> Main(string[] args)
     {
-        if (args.Length == 1 && args[0] == QQMusicControlPoc.QQMusicWebStatusTransport.HelperArgument)
-            return QQMusicControlPoc.QQMusicWebStatusHost.RunFromStandardInput();
-
-        if (args.Length == 1 && args[0] == QQMusicControlPoc.QQMusicWebPlayTransport.HelperArgument)
-            return QQMusicControlPoc.QQMusicWebBridgeHost.RunFromStandardInput();
-
         if (args.Contains(
                 "--diagnose-next-guard",
                 StringComparer.OrdinalIgnoreCase))
@@ -28,17 +22,6 @@ internal static class Program
                     WriteIndented = true
                 }));
             return 0;
-        }
-
-        var backend = Environment.GetEnvironmentVariable("AWOO_QQMUSIC_BACKEND");
-        if (string.IsNullOrWhiteSpace(backend) ||
-            string.Equals(backend, "web", StringComparison.OrdinalIgnoreCase))
-            return await ConnectorRuntime.RunAsync("qqmusic", new QQMusicWebPlayerAdapter());
-        if (!string.IsNullOrWhiteSpace(backend) &&
-            !string.Equals(backend, "native", StringComparison.OrdinalIgnoreCase))
-        {
-            Console.Error.WriteLine("Unknown QQ backend; use web or native. No fallback was attempted.");
-            return 2;
         }
 
         return await ConnectorRuntime.RunAsync(

@@ -3,7 +3,6 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading.Channels;
 using Windows.Media.Control;
-using Windows.Storage.Streams;
 
 namespace UnifiedPlayerControlPoc;
 
@@ -12,7 +11,6 @@ internal enum QQMusicEventKind
     Initialized,
     SessionsChanged,
     MediaPropertiesChanged,
-    ArtworkChanged,
     PlaybackInfoChanged,
     TimelinePropertiesChanged,
     WindowTitleChanged,
@@ -46,9 +44,6 @@ internal sealed class QQMusicEventMonitor : IAsyncDisposable
     private QQMusicTimelineProbe? _timelineProbe;
     private PlayerTrack? _mediaTrack;
     private long _mediaGeneration;
-    private ArtworkRequest? _pendingArtwork;
-    private CancellationTokenSource? _artworkCancellation;
-    private Task? _artworkWorker;
     private WinEventNameChangeHook? _windowHook;
 
     public string SourceStatus
@@ -113,56 +108,11 @@ internal sealed class QQMusicEventMonitor : IAsyncDisposable
     public QQMusicTimelineSnapshot? ReadTimelineSnapshot()
     {
         QQMusicTimelineProbe? probe;
-        GlobalSystemMediaTransportControlsSession? session;
         lock (_mediaSync)
         {
             probe = _timelineProbe;
-            session = _session;
         }
-        var snapshot = probe?.ReadSnapshot(session);
-        lock (_mediaSync)
-        {
-            return !_disposed && ReferenceEquals(_session, session)
-                ? snapshot
-                : null;
-        }
-    }
-
-    /// <summary>
-    /// Refreshes only the already selected session, with a two-second wait
-    /// limit. True means the read was committed, possibly as empty metadata;
-    /// it is not a playback acknowledgement. This does not start the monitor.
-    /// </summary>
-    public async Task<bool> RefreshMediaAsync(
-        CancellationToken cancellationToken = default)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        GlobalSystemMediaTransportControlsSession? session;
-        long mediaGeneration;
-        lock (_mediaSync)
-        {
-            ObjectDisposedException.ThrowIf(_disposed, this);
-            session = _session;
-            if (session is null)
-            {
-                return false;
-            }
-            mediaGeneration = ++_mediaGeneration;
-            CancelArtworkLocked();
-        }
-
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(
-            cancellationToken);
-        timeout.CancelAfter(TimeSpan.FromSeconds(2));
-        try
-        {
-            return await RefreshMediaPropertiesAsync(
-                session, mediaGeneration, timeout.Token).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-        {
-            return false;
-        }
+        return probe?.ReadSnapshot();
     }
 
     public void NotifySnapshotInvalidated()
@@ -197,7 +147,6 @@ internal sealed class QQMusicEventMonitor : IAsyncDisposable
             _session = null;
             _timelineProbe = null;
             _mediaTrack = null;
-            CancelArtworkLocked();
             _windowHook = null;
         }
 
@@ -336,11 +285,7 @@ internal sealed class QQMusicEventMonitor : IAsyncDisposable
                 return;
             }
             _session = nextSession;
-            // A newly selected session must not inherit the previous session's
-            // local fallback-clock origin, even if its timestamps look equal.
-            _timelineProbe = new QQMusicTimelineProbe(manager);
             _mediaTrack = null;
-            CancelArtworkLocked();
             mediaGeneration = ++_mediaGeneration;
         }
 
@@ -379,13 +324,8 @@ internal sealed class QQMusicEventMonitor : IAsyncDisposable
         GlobalSystemMediaTransportControlsSession sender,
         MediaPropertiesChangedEventArgs args)
     {
-        long mediaGeneration;
-        lock (_mediaSync)
-        {
-            if (_disposed || !ReferenceEquals(_session, sender)) return;
-            mediaGeneration = ++_mediaGeneration;
-            CancelArtworkLocked();
-        }
+        var mediaGeneration = Interlocked.Increment(
+            ref _mediaGeneration);
         _ = RefreshMediaPropertiesAsync(sender, mediaGeneration);
     }
 
@@ -415,130 +355,41 @@ internal sealed class QQMusicEventMonitor : IAsyncDisposable
             DateTimeOffset.Now));
     }
 
-    private async Task<bool> RefreshMediaPropertiesAsync(
+    private async Task RefreshMediaPropertiesAsync(
         GlobalSystemMediaTransportControlsSession session,
-        long mediaGeneration,
-        CancellationToken cancellationToken = default)
+        long mediaGeneration)
     {
         try
         {
-            var properties = await ReadMediaPropertiesAsync(session)
-                .WaitAsync(cancellationToken).ConfigureAwait(false);
+            var properties = await session.TryGetMediaPropertiesAsync();
             var title = properties.Title?.Trim() ?? string.Empty;
-            PlayerTrack? track = string.IsNullOrWhiteSpace(title) ? null : new(
-                string.Empty, title, properties.Artist?.Trim() ?? string.Empty,
-                properties.AlbumTitle?.Trim() ?? string.Empty);
+            var artist = properties.Artist?.Trim() ?? string.Empty;
+            var track = string.IsNullOrWhiteSpace(title)
+                ? null
+                : new PlayerTrack(
+                    string.Empty,
+                    title,
+                    artist,
+                    properties.AlbumTitle?.Trim() ?? string.Empty);
             lock (_mediaSync)
             {
-                cancellationToken.ThrowIfCancellationRequested();
                 if (!ReferenceEquals(_session, session)
                     || _disposed
                     || mediaGeneration != _mediaGeneration)
                 {
-                    return false;
+                    return;
                 }
-                if (SameMediaTrack(_mediaTrack, track))
-                    track = track! with { CoverUrl = _mediaTrack!.CoverUrl };
                 _mediaTrack = track;
-                CancelArtworkLocked();
-                if (track is not null && properties.Thumbnail is { } thumbnail)
-                {
-                    _pendingArtwork = new(session, mediaGeneration, track, thumbnail);
-                    // One worker and one latest-only pending request. Metadata
-                    // commits never wait for thumbnail I/O or an older request.
-                    if (_artworkWorker is null)
-                        _artworkWorker = Task.Run(ReadArtworkAsync);
-                }
             }
             Publish(new QQMusicPlayerEvent(
                 QQMusicEventKind.MediaPropertiesChanged,
                 DateTimeOffset.Now));
-            return true;
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
         }
         catch
         {
             // A later media-property or session event retries the read.
-            return false;
         }
     }
-
-    private static async Task<GlobalSystemMediaTransportControlsSessionMediaProperties> ReadMediaPropertiesAsync(
-        GlobalSystemMediaTransportControlsSession session)
-    {
-        return await session.TryGetMediaPropertiesAsync();
-    }
-
-    private void CancelArtworkLocked()
-    {
-        _pendingArtwork = null;
-        _artworkCancellation?.Cancel();
-    }
-
-    private async Task ReadArtworkAsync()
-    {
-        while (true)
-        {
-            ArtworkRequest request;
-            CancellationTokenSource cancellation;
-            lock (_mediaSync)
-            {
-                if (_disposed || _pendingArtwork is null)
-                {
-                    _artworkWorker = null;
-                    return;
-                }
-                request = _pendingArtwork;
-                _pendingArtwork = null;
-                cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(2));
-                _artworkCancellation = cancellation;
-            }
-            try
-            {
-                var cover = await QQMusicMediaArtwork.ReadAsync(
-                    request.Thumbnail, cancellation.Token).ConfigureAwait(false);
-                var changed = false;
-                lock (_mediaSync)
-                {
-                    if (!_disposed && !cancellation.IsCancellationRequested &&
-                        ReferenceEquals(_session, request.Session) &&
-                        request.Generation == _mediaGeneration &&
-                        ReferenceEquals(_mediaTrack, request.Track) &&
-                        !string.IsNullOrEmpty(cover) && _mediaTrack.CoverUrl != cover)
-                    {
-                        _mediaTrack = _mediaTrack with { CoverUrl = cover };
-                        changed = true;
-                    }
-                }
-                if (changed) Publish(new(QQMusicEventKind.ArtworkChanged, DateTimeOffset.Now));
-            }
-            catch (Exception error) when (error is not OutOfMemoryException)
-            {
-                // Artwork is decorative only: failure is not a failed metadata
-                // observation and never provides playback-transition evidence.
-            }
-            finally
-            {
-                lock (_mediaSync)
-                {
-                    if (ReferenceEquals(_artworkCancellation, cancellation))
-                        _artworkCancellation = null;
-                }
-                cancellation.Dispose();
-            }
-        }
-    }
-
-    internal static bool SameMediaTrack(PlayerTrack? left, PlayerTrack? right) =>
-        left is not null && right is not null && left.Title == right.Title &&
-        left.Artist == right.Artist && left.Album == right.Album;
-
-    private sealed record ArtworkRequest(
-        GlobalSystemMediaTransportControlsSession Session, long Generation,
-        PlayerTrack Track, IRandomAccessStreamReference Thumbnail);
 
     private bool IsCurrentSession(
         GlobalSystemMediaTransportControlsSession session)

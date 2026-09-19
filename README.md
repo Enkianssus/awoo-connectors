@@ -23,13 +23,19 @@ older cores or connectors. NetEase `3.1.37.205354.7` advertises
 `snapshot-events-v1`; a new core subscribes with `subscribe` and receives exact
 snapshot event envelopes, while an older core continues to use `probe`.
 
-QQ Music connector 22.61.1 uses exact compatibility profiles for QQ Music 22.22,
+QQ Music connector 22.61.5 restores the native implementation from 22.61.1,
+replacing the Web backend without carrying its bridge or ownership contract.
+It uses exact compatibility profiles for QQ Music 22.22,
 22.41, 22.51, 22.52, 22.60, and 22.61. On a matching DLL hash it calls QQ's internal
 `AddSongs(mode=0)` path to insert exactly one song after the current item, then
 uses QQ's normal Next command. Both immediate play and guarded fallback preserve
 the host playlist instead of rebuilding or appending to it. The mute/pause guard
 remains active until the requested track is confirmed, so a failed native insert
 does not silently fall back to the queue-breaking `/playbysongid` path.
+This restoration remains version/hash locked; it does not claim tolerance of
+unknown QQ updates. Its v2 minimum core version is 1.1.10. The Web revisions
+22.61.2–22.61.4 retain their 1.2.1 core requirement; published historical assets
+are not changed or replaced.
 
 QQ Music profile pack 1.3.0 delivered the QQ Music 22.61 profile independently
 and was validated with the unchanged released 22.60.2 connector. Connector
@@ -135,7 +141,7 @@ component is the connector revision:
 
 - NetEase `3.1.38.205386` -> connector `3.1.38.205386.1`
 - KuGou `20.1.41.27870` -> connector `20.1.41.1`
-- QQ Music `22.61` -> connector `22.61.1`
+- QQ Music `22.61` -> connector `22.61.5`
 
 KuGou deliberately omits its noisy final client build component:
 
@@ -195,7 +201,7 @@ Awoo MusicBot 1.1.10 and newer:
 
 `https://app.enkianss.us/connectors/v2/catalog.json`
 
-Every v2 connector entry has `minimumCoreVersion: "1.1.10"` and exactly one
+Every v2 connector entry has `minimumCoreVersion` of at least `1.1.10` and exactly one
 `package` object with `deployment: "framework-dependent"`. A future connector
 Release contains only the Awoo framework-dependent ZIP and its `.sig` and
 `.sha256` sidecars. The ZIP uses Awoo MusicBot's private, per-architecture .NET
@@ -210,9 +216,11 @@ retains the previous version for rollback. See
 tag, asset and proxy contract.
 
 Runtime packaging and connector protocol compatibility are independent. The
-v2 `minimumCoreVersion` is a catalog-schema boundary: it prevents old cores
+v2 `minimumCoreVersion` has a catalog-schema floor: it prevents old cores
 from interpreting the forward-only `package` field as a v1 entry, not a claim
-that the connector protocol changed. QQ Music compatibility profiles retain
+that the connector protocol changed. A backend may need a higher core version
+for behavior contracts: QQ Web revisions 22.61.2–22.61.4 require 1.2.1, while
+the restored native 22.61.5 uses the 1.1.10 floor. QQ Music compatibility profiles retain
 their separate v1 catalog until a profile-specific migration is designed.
 
 QQ Music compatibility profiles have a separate signed update catalog:
