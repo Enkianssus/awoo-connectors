@@ -128,7 +128,7 @@ NetEase `3.1.38.205386.1` recognizes rate-limited search responses instead of
 reporting a false empty result, falls back across the compatible search
 endpoints, and compares canonically equivalent Unicode song metadata safely.
 
-NetEase `3.1.41.205529.1` supports player `3.1.41.205529` with an explicit
+NetEase `3.1.41.205529.2` supports player `3.1.41.205529` with an explicit
 CEF ABI profile. The profile verifies the exact CEF version, both API hashes,
 commit and native call targets, then requires a real DevTools callback before
 reporting ready. Bridge installation failures retain the probe's detailed
@@ -142,7 +142,7 @@ for the validation evidence and manual acceptance scope.
 The three desktop-player connectors use player-scoped versions whose final
 component is the connector revision:
 
-- NetEase `3.1.41.205529` -> connector `3.1.41.205529.1`
+- NetEase `3.1.41.205529` -> connector `3.1.41.205529.2`
 - KuGou `20.1.41.27870` -> connector `20.1.41.1`
 - QQ Music `22.61` -> connector `22.61.5`
 

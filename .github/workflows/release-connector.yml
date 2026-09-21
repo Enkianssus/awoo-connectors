@@ -394,7 +394,7 @@ jobs:
 
       - name: Clean old connector R2 objects
         # This release is authorized to upload new assets, not purge old caches.
-        if: github.ref_name != 'qqmusic-v22.61.5' && github.ref_name != 'netease-v3.1.41.205529.1'
+        if: github.ref_name != 'qqmusic-v22.61.5' && github.ref_name != 'netease-v3.1.41.205529.1' && github.ref_name != 'netease-v3.1.41.205529.2'
         shell: pwsh
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.ENKIANSSUS_CLOUDFLARE_API_TOKEN }}
