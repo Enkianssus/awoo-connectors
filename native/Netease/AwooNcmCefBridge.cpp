@@ -3,6 +3,7 @@
 
 #include "include/cef_browser.h"
 #include "include/cef_registration.h"
+#include "CefCompatibilityProfiles.h"
 
 #include <algorithm>
 #include <atomic>
@@ -21,22 +22,9 @@ namespace {
 constexpr wchar_t kExpectedProcessName[] = L"cloudmusic.exe";
 constexpr wchar_t kPlayerWindowClass[] = L"OrpheusBrowserHost";
 constexpr wchar_t kCefWindowClass[] = L"CefBrowserWindow";
-constexpr int kExpectedCefVersion[] = {
-    91, 2, 2, 2376, 91, 0, 4472, 169
-};
-constexpr char kExpectedUniversalApiHash[] =
-    "37d5f9f068cf9b5ecfb6d039fc3c5c56be3864ba";
-constexpr char kExpectedPlatformApiHash[] =
-    "306fdfb40c5dbdc34992b9a5669c199a64749d5c";
-
-// CEF 91 branch 4472, validated by the API hash above:
-// CefBrowserPlatformDelegate stores browser_ immediately after its vptr and
-// web_contents_ pointer. The CefBrowserHost vtable declares
-// SendDevToolsMessage as method 21.
-constexpr size_t kPlatformDelegateBrowserOffset = 0x10;
-constexpr size_t kSendDevToolsMessageSlot = 21;
-constexpr size_t kAddDevToolsMessageObserverSlot = 23;
-constexpr size_t kLastValidatedHostSlot = 59;
+// Layouts and call targets are selected only after matching a known CEF ABI.
+// The 3.1.41 profile also pins the live host vtable and called method RVAs.
+awoo::netease::CefProfileMatch g_cef_profile;
 constexpr char kTrackEventBinding[] = "__awooNcmNativeEvent";
 
 struct CefCBaseRefCounted {
@@ -220,46 +208,28 @@ bool ValidateCefVersion() {
   }
 
   int actual_version[8]{};
-  bool exact_version = true;
   for (int index = 0; index < 8; ++index) {
     actual_version[index] = version_info(index);
-    exact_version = exact_version
-        && actual_version[index] == kExpectedCefVersion[index];
   }
 
-  // CEF_API_HASH_UNIVERSAL is entry 0 and CEF_API_HASH_PLATFORM is entry 1.
-  // These were historically read in reverse order, which made validation
-  // fail and was then hidden by HELLO changing the bridge state back to ready.
-  const char* universal = api_hash(0);
-  const char* platform = api_hash(1);
-  if (universal == nullptr
-      || platform == nullptr
-      || std::strcmp(universal, kExpectedUniversalApiHash) != 0
-      || std::strcmp(platform, kExpectedPlatformApiHash) != 0) {
+  const char* hash_0 = api_hash(0);
+  const char* hash_1 = api_hash(1);
+  g_cef_profile = awoo::netease::MatchCefProfile(
+      actual_version, hash_0, hash_1, api_hash(2));
+  if (g_cef_profile.profile == nullptr) {
     wchar_t details[256]{};
     swprintf_s(
         details,
-        L"refused: CEF API hash mismatch platform=%hs universal=%hs",
-        platform == nullptr ? "null" : platform,
-        universal == nullptr ? "null" : universal);
+        L"refused: unsupported CEF ABI profile hash0=%hs hash1=%hs",
+        hash_0 == nullptr ? "null" : hash_0,
+        hash_1 == nullptr ? "null" : hash_1);
     SetStatus(details);
     return false;
   }
 
-  // The CEF API hashes describe the public binary ABI and are a stronger
-  // compatibility boundary than the descriptive patch/build numbers. Permit
-  // another patch build only when both hashes and the CEF/Chromium major
-  // versions still match. ResolveLiveHostObject and the first DevTools watcher
-  // installation then act as non-persistent structural/runtime probes. A
-  // changed ABI hash is never tried.
-  if (!exact_version) {
-    if (actual_version[0] != kExpectedCefVersion[0]
-        || actual_version[4] != kExpectedCefVersion[4]) {
-      SetStatus(L"refused: unsupported CEF major version");
-      return false;
-    }
+  if (g_cef_profile.RequiresRuntimeProbe()) {
     g_cef_validation_mode.store(2, std::memory_order_release);
-    SetStatus(L"probing: compatible CEF API hash on an unknown patch build");
+    SetStatus(L"probing: matched CEF profile awaiting DevTools callback");
     return true;
   }
 
@@ -301,14 +271,15 @@ BOOL CALLBACK FindCefWindow(HWND window, LPARAM parameter) {
 }
 
 bool LooksLikeHostObject(void* host) {
-  if (!IsReadableRange(host, sizeof(void*))) {
+  if (g_cef_profile.profile == nullptr
+      || !IsReadableRange(host, sizeof(void*))) {
     return false;
   }
   __try {
     auto** vtable = *reinterpret_cast<void***>(host);
     if (!IsReadableRange(
             vtable,
-            (kLastValidatedHostSlot + 1) * sizeof(void*))) {
+            (g_cef_profile.profile->last_host_slot + 1) * sizeof(void*))) {
       return false;
     }
     constexpr size_t slots[] = {0, 4, 7, 21, 22, 23, 59};
@@ -317,13 +288,22 @@ bool LooksLikeHostObject(void* host) {
         return false;
       }
     }
-    return true;
+    return awoo::netease::MatchCefHostRvas(
+        *g_cef_profile.profile,
+        reinterpret_cast<uintptr_t>(vtable) - g_libcef_begin,
+        reinterpret_cast<uintptr_t>(
+            vtable[g_cef_profile.profile->send_message_slot]) - g_libcef_begin,
+        reinterpret_cast<uintptr_t>(
+            vtable[g_cef_profile.profile->add_observer_slot]) - g_libcef_begin);
   } __except (EXCEPTION_EXECUTE_HANDLER) {
     return false;
   }
 }
 
 void* ResolveLiveHostObject() {
+  if (g_cef_profile.profile == nullptr) {
+    return nullptr;
+  }
   WindowSearch search{};
   EnumWindows(
       FindPlayerWindow,
@@ -346,7 +326,7 @@ void* ResolveLiveHostObject() {
       GetWindowLongPtrW(search.cef, GWLP_USERDATA));
   if (!IsReadableRange(
           platform_delegate,
-          kPlatformDelegateBrowserOffset + sizeof(void*))) {
+          g_cef_profile.profile->delegate_browser_offset + sizeof(void*))) {
     SetStatus(L"waiting: CEF platform delegate is not available");
     return nullptr;
   }
@@ -354,7 +334,7 @@ void* ResolveLiveHostObject() {
   void* host = nullptr;
   __try {
     host = *reinterpret_cast<void**>(
-        platform_delegate + kPlatformDelegateBrowserOffset);
+        platform_delegate + g_cef_profile.profile->delegate_browser_offset);
   } __except (EXCEPTION_EXECUTE_HANDLER) {
     host = nullptr;
   }
@@ -549,9 +529,10 @@ bool ProcessDevToolsMessage(
     std::string payload;
     if (TryReadJsonStringField(json, "name", &name)
         && name == kTrackEventBinding
-        && TryReadJsonStringField(json, "payload", &payload)) {
-      PublishTrackEvent(std::move(payload));
+        && TryReadJsonStringField(json, "payload", &payload)
+        && !payload.empty()) {
       g_event_watcher_state.store(1, std::memory_order_release);
+      PublishTrackEvent(std::move(payload));
     }
     // We parse the complete protocol message above. Returning true prevents
     // CEF from dispatching the same message through the ABI-sensitive typed
@@ -658,7 +639,7 @@ bool EnsureDevToolsObserverOnUiThread(void* host) {
   auto** vtable = *reinterpret_cast<void***>(host);
   const auto add_observer =
       reinterpret_cast<AddDevToolsMessageObserverAbi>(
-          vtable[kAddDevToolsMessageObserverSlot]);
+          vtable[g_cef_profile.profile->add_observer_slot]);
   add_observer(host, &registration, observer.get());
   if (registration.get() == nullptr) {
     return false;
@@ -759,7 +740,7 @@ void __stdcall TaskExecute(CefCTask* raw_task) {
       } else {
         auto** vtable = *reinterpret_cast<void***>(host);
         const auto send = reinterpret_cast<SendDevToolsMessage>(
-            vtable[kSendDevToolsMessageSlot]);
+            vtable[g_cef_profile.profile->send_message_slot]);
         result = send(
             host,
             task->message.data(),
@@ -1019,6 +1000,18 @@ bool InstallTrackWatcher() {
   return posted;
 }
 
+bool WaitForTrackWatcherProof() {
+  std::unique_lock<std::mutex> lock(g_track_event_mutex);
+  return g_track_event_condition.wait_for(
+      lock,
+      std::chrono::milliseconds(3000),
+      [] {
+        return g_event_watcher_state.load(std::memory_order_acquire) == 1
+            && g_track_event_sequence > 0
+            && !g_track_event_payload.empty();
+      });
+}
+
 unsigned long long TrackEventAgeMilliseconds() {
   std::lock_guard<std::mutex> lock(g_track_event_mutex);
   if (g_track_event_tick == 0) {
@@ -1082,6 +1075,10 @@ std::string ReadDevToolsDiagnostics() {
       + " exception-address="
       + std::to_string(
           g_last_devtools_exception_address.load(std::memory_order_acquire))
+      + " profile="
+      + (g_cef_profile.profile == nullptr
+             ? "none"
+             : g_cef_profile.profile->id)
       + " last=" + g_last_devtools_message;
 }
 
@@ -1121,15 +1118,17 @@ std::string HandleRequest(std::string request) {
       }
       SetStatus(
           g_cef_validation_mode.load(std::memory_order_acquire) == 2
-              ? L"ready: compatible CEF patch passed runtime probe"
+              ? L"ready: CEF profile passed DevTools callback probe"
               : L"ready: exact CEF build + internal DevTools");
       g_bridge_state.store(1, std::memory_order_release);
       return
-          "OK READY cef=91.2.2+4472.169 "
-          "validation="
+          std::string("OK READY cef=")
+          + g_cef_profile.profile->display_version
+          + " profile=" + g_cef_profile.profile->id
+          + " validation="
           + std::string(
               g_cef_validation_mode.load(std::memory_order_acquire) == 2
-                  ? "compatible-api-hash+runtime-probe"
+                  ? "profile+devtools-callback"
                   : "exact")
           + " "
           "route=internal-devtools events="
@@ -1149,6 +1148,9 @@ std::string HandleRequest(std::string request) {
     return ReadDevToolsDiagnostics();
   }
 
+  if (g_bridge_state.load(std::memory_order_acquire) == -1) {
+    return "REFUSED " + StatusAsAscii();
+  }
   if (g_bridge_state.load() != 1
       || ResolveLiveHostObject() == nullptr) {
     g_bridge_state.store(0);
@@ -1328,10 +1330,20 @@ DWORD WINAPI TrackWatcherWorker(void*) {
       const bool installed = InstallTrackWatcher();
       if (installed
           && g_cef_validation_mode.load(std::memory_order_acquire) == 2
+          && WaitForTrackWatcherProof()
           && ResolveLiveHostObject() != nullptr) {
-        SetStatus(L"ready: compatible CEF patch passed runtime probe");
+        SetStatus(L"ready: CEF profile passed DevTools callback probe");
         g_bridge_state.store(1, std::memory_order_release);
       }
+    }
+    // A callback can arrive just after the bounded first probe timed out.
+    // Promote that verified connection without waiting for the next heartbeat.
+    if (g_cef_validation_mode.load(std::memory_order_acquire) == 2
+        && g_bridge_state.load(std::memory_order_acquire) == 0
+        && g_event_watcher_state.load(std::memory_order_acquire) == 1
+        && ResolveLiveHostObject() != nullptr) {
+      SetStatus(L"ready: CEF profile passed DevTools callback probe");
+      g_bridge_state.store(1, std::memory_order_release);
     }
     Sleep(2000);
   }
@@ -1362,18 +1374,24 @@ DWORD WINAPI BridgeWorker(void*) {
 
   if (ResolveLiveHostObject() != nullptr) {
     if (g_cef_validation_mode.load(std::memory_order_acquire) == 2) {
-      SetStatus(L"probing: unknown CEF patch through internal DevTools");
+      SetStatus(L"probing: CEF profile through internal DevTools");
       if (!InstallTrackWatcher()) {
-        SetStatus(L"refused: compatible CEF runtime probe failed");
+        SetStatus(L"refused: CEF profile runtime probe failed");
         g_bridge_state.store(-1, std::memory_order_release);
         RunPipeServer();
         return 0;
       }
-      SetStatus(L"ready: compatible CEF patch passed runtime probe");
+      if (WaitForTrackWatcherProof()) {
+        SetStatus(L"ready: CEF profile passed DevTools callback probe");
+        g_bridge_state.store(1, std::memory_order_release);
+      } else {
+        SetStatus(L"waiting: CEF profile DevTools callback probe");
+        g_bridge_state.store(0, std::memory_order_release);
+      }
     } else {
       SetStatus(L"ready: exact CEF build + internal DevTools");
+      g_bridge_state.store(1, std::memory_order_release);
     }
-    g_bridge_state.store(1, std::memory_order_release);
   } else {
     g_bridge_state.store(0, std::memory_order_release);
   }

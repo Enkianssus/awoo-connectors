@@ -127,6 +127,18 @@ jobs:
             throw "Unexpected Chromium net_error_list.h SHA-256: $actualSha256"
           }
 
+      - name: Validate NetEase compatibility policies
+        if: steps.metadata.outputs.id == 'netease'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & ./native/Netease/test-compatibility.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'NetEase CEF compatibility tests failed.' }
+          dotnet run --project tests/NeteaseTrackMatchHarness/NeteaseTrackMatchHarness.csproj -c Release
+          if ($LASTEXITCODE -ne 0) { throw 'NetEase track/search tests failed.' }
+          node tests/catalog-v2-policy.test.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Catalog v2 policy tests failed.' }
+
       - name: Validate QQ native compatibility policies
         if: steps.metadata.outputs.id == 'qqmusic'
         shell: pwsh
@@ -382,7 +394,7 @@ jobs:
 
       - name: Clean old connector R2 objects
         # This release is authorized to upload new assets, not purge old caches.
-        if: github.ref_name != 'qqmusic-v22.61.5'
+        if: github.ref_name != 'qqmusic-v22.61.5' && github.ref_name != 'netease-v3.1.41.205529.1'
         shell: pwsh
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.ENKIANSSUS_CLOUDFLARE_API_TOKEN }}

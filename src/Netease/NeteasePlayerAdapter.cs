@@ -57,7 +57,7 @@ internal sealed class NeteasePlayerAdapter :
             "Mozilla/5.0 UnifiedPlayerControlPoc/1.0");
         _httpClient.DefaultRequestHeaders.Add(
             "Cookie",
-            "os=pc; appver=3.1.38;");
+            "os=pc; appver=3.1.41;");
         _httpClient.DefaultRequestHeaders.Accept.Add(
             new MediaTypeWithQualityHeaderValue("application/json"));
     }
@@ -66,7 +66,7 @@ internal sealed class NeteasePlayerAdapter :
 
     public string DisplayName => "网易云音乐";
 
-    public string TestedVersion => "3.1.38.205386";
+    public string TestedVersion => "3.1.41.205529";
 
     public PlayerCapabilities Capabilities { get; } = new(
         Search: true,
