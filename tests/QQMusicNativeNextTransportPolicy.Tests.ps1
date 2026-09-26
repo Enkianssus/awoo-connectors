@@ -95,6 +95,26 @@ $expectedProfiles = @(
             getCategoryCountRva = '0x00509FB0'
             songItemSize = '0xA0'
         }
+    },
+    @{
+        Version = '22.71'
+        Fields = @{
+            fileVersion = '22.71'
+            clientSha256 = '0108E68BEDA8B0AF61A71911519FA4FEB5DF02417D32F4A0993868E5157624BE'
+            commonSha256 = '4267E1C27F7251A31460613A97F5787FD7D9D0BE3664E5E615251ABA2780471F'
+            singleSongPlayDispatchRva = '0x004B0CE4'
+            expectedPlayDispatchBytes = 'E8 C7 91 16 00'
+            getCatManagerRva = '0x0000F18A'
+            getQqUinExRva = '0x0002E283'
+            songItemConstructorRva = '0x0004BB70'
+            songItemDestructorRva = '0x0004B6B0'
+            addSongsRva = '0x00462600'
+            hiddenCategoryIdRva = '0x00C6B1C8'
+            getListRootRva = '0x0063CAF0'
+            getListHelperRva = '0x0063CC50'
+            getCategoryCountRva = '0x005134E0'
+            songItemSize = '0xA0'
+        }
     }
 )
 foreach ($expectedProfile in $expectedProfiles) {
@@ -107,14 +127,14 @@ foreach ($expectedProfile in $expectedProfiles) {
     }
 }
 
-if ([string]$project.Project.PropertyGroup.Version -ne '22.61.5') {
-    throw 'QQ Music connector version must follow the tested QQ Music 22.61 branch.'
+if ([string]$project.Project.PropertyGroup.Version -ne '22.71.1') {
+    throw 'QQ Music connector version must follow the tested QQ Music 22.71 branch.'
 }
-if ($adapter -notmatch '22\.22 / 22\.41 / 22\.51 / 22\.52 / 22\.60 / 22\.61') {
-    throw 'QQ Music adapter must advertise the complete tested player list through 22.61.'
+if ($adapter -notmatch '22\.22 / 22\.41 / 22\.51 / 22\.52 / 22\.60 / 22\.61 / 22\.71') {
+    throw 'QQ Music adapter must advertise the complete tested player list through 22.71.'
 }
-if ($catalogScript -notmatch "testedPlayerVersion: '22\.22 / 22\.41 / 22\.51 / 22\.52 / 22\.60 / 22\.61'") {
-    throw 'QQ Music v2 catalog metadata must advertise the complete tested player list through 22.61.'
+if ($catalogScript -notmatch "testedPlayerVersion: '22\.22 / 22\.41 / 22\.51 / 22\.52 / 22\.60 / 22\.61 / 22\.71'") {
+    throw 'QQ Music v2 catalog metadata must advertise the complete tested player list through 22.71.'
 }
 
 Write-Output 'QQMusicNativeNextTransportPolicy.Tests passed.'

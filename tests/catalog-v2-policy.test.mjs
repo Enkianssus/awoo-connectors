@@ -139,13 +139,14 @@ try {
   });
   assert.equal(Object.hasOwn(generated.connectors.kugou, 'awooPackage'), false);
 
-  const nativeQqTestedVersions = '22.22 / 22.41 / 22.51 / 22.52 / 22.60 / 22.61';
+  const nativeQqTestedVersions = '22.22 / 22.41 / 22.51 / 22.52 / 22.60 / 22.61 / 22.71';
   for (const [id, version, runtime, expectedCore, expectedTested] of [
     ['qqmusic', '22.61.1', 'win-x86', '1.1.10', nativeQqTestedVersions],
     ['qqmusic', '22.61.2', 'win-x86', '1.2.1', '22.61'],
     ['qqmusic', '22.61.3', 'win-x86', '1.2.1', '22.61'],
     ['qqmusic', '22.61.4', 'win-x86', '1.2.1', '22.61'],
     ['qqmusic', '22.61.5', 'win-x86', '1.1.10', nativeQqTestedVersions],
+    ['qqmusic', '22.71.1', 'win-x86', '1.1.10', nativeQqTestedVersions],
     ['netease', '3.1.38.205386.2', 'win-x64', '1.1.10'],
     ['folia', '1.1.4', 'win-x86', '1.1.10']
   ]) {

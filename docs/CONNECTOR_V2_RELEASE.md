@@ -18,11 +18,14 @@ catalog shape and the no-full-package failure behavior. The connector protocol
 itself remains protocol version 1; this is a distribution-contract boundary,
 not a protocol incompatibility.
 
-QQ Music 22.61.2 and later additionally require Awoo MusicBot 1.2.1 for the Web
+QQ Music 22.61.2–22.61.4 additionally require Awoo MusicBot 1.2.1 for the Web
 backend's playback-anchor, next-target ownership and deferred-observation
-behavior. The QQ catalog generator therefore uses `minimumCoreVersion: "1.2.1"`;
-the NetEase, KuGou and Folia generators remain at `1.1.10`. This is a real core
-behavior dependency, not a consequence of framework-dependent packaging.
+behavior. The QQ catalog generator uses `minimumCoreVersion: "1.2.1"` only for
+those historical Web revisions. Native 22.61.5 and 22.71.1 use `1.1.10`, as do
+the NetEase, KuGou and Folia generators. New backend changes need an explicit
+contract review; a higher QQ connector version alone does not imply the Web
+dependency. This is a real core behavior dependency, not a consequence of
+framework-dependent packaging.
 
 The public routes that must be provided by the download Worker are:
 

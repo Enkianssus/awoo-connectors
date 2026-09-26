@@ -23,10 +23,10 @@ older cores or connectors. NetEase `3.1.37.205354.7` advertises
 `snapshot-events-v1`; a new core subscribes with `subscribe` and receives exact
 snapshot event envelopes, while an older core continues to use `probe`.
 
-QQ Music connector 22.61.5 restores the native implementation from 22.61.1,
-replacing the Web backend without carrying its bridge or ownership contract.
-It uses exact compatibility profiles for QQ Music 22.22,
-22.41, 22.51, 22.52, 22.60, and 22.61. On a matching DLL hash it calls QQ's internal
+QQ Music connector 22.71.1 adds an exact profile for QQ Music 22.71 while keeping
+the native implementation restored in 22.61.5, without the Web bridge or its
+ownership contract. It includes exact compatibility profiles for QQ Music
+22.22, 22.41, 22.51, 22.52, 22.60, 22.61, and 22.71. On a matching DLL hash it calls QQ's internal
 `AddSongs(mode=0)` path to insert exactly one song after the current item, then
 uses QQ's normal Next command. Both immediate play and guarded fallback preserve
 the host playlist instead of rebuilding or appending to it. The mute/pause guard
@@ -36,6 +36,13 @@ This restoration remains version/hash locked; it does not claim tolerance of
 unknown QQ updates. Its v2 minimum core version is 1.1.10. The Web revisions
 22.61.2–22.61.4 retain their 1.2.1 core requirement; published historical assets
 are not changed or replaced.
+
+The 22.71 profile targets installation build `QQMusic2271.00.25.13` and both
+exact DLL hashes. One live Shelter insertion returned accepted; the user
+confirmed the next position, preserved queue, no focus steal and normal playback.
+See [22.71 validation](docs/QQMUSIC_22_71_VALIDATION.md) for the
+static evidence and test limits. Adding this profile does not
+change the native insertion algorithm.
 
 QQ Music profile pack 1.3.0 delivered the QQ Music 22.61 profile independently
 and was validated with the unchanged released 22.60.2 connector. Connector

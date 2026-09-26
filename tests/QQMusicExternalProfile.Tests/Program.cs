@@ -7,6 +7,11 @@ const string clientHash =
     "D42A800E2110B27C2D94DBB1D78AB1A9DDDA2BBDA3E623C5EEBB980AF92F9B29";
 const string commonHash =
     "15190F1D87B5B3853EF47F943F333FAD9E8D51277ADFD56AC332EABBDF8FC14D";
+const string newVersion = "22.71";
+const string newClientHash =
+    "0108E68BEDA8B0AF61A71911519FA4FEB5DF02417D32F4A0993868E5157624BE";
+const string newCommonHash =
+    "4267E1C27F7251A31460613A97F5787FD7D9D0BE3664E5E615251ABA2780471F";
 
 static void Assert(bool condition, string message)
 {
@@ -26,10 +31,38 @@ static string WithInvalidField(string json, string field, JsonNode? value)
     return document.ToJsonString();
 }
 
-// Keep the fixture outside the loader's bundled profiles/qqmusic directory:
+static string DifferentHash(string hash) =>
+    (hash[0] == '0' ? "1" : "0") + hash[1..];
+
+static QQMusicNativeNextProfile AssertIdentityLock(
+    string version,
+    string clientHash,
+    string commonHash)
+{
+    var profile = QQMusicNativeNextProfiles.Find(version, clientHash, commonHash);
+    Assert(profile is not null, $"The {version} profile must load from the external directory.");
+    Assert(ReferenceEquals(profile, QQMusicNativeNextProfiles.Find(
+        version, clientHash.ToLowerInvariant(), commonHash.ToLowerInvariant())),
+        $"{version} SHA-256 matching must be case-insensitive.");
+    Assert(QQMusicNativeNextProfiles.Find("22.60", clientHash, commonHash) is null,
+        $"A different QQ version must not use the {version} profile.");
+    Assert(QQMusicNativeNextProfiles.Find(version + ".0", clientHash, commonHash) is null,
+        $"{version} version matching must remain exact.");
+    Assert(QQMusicNativeNextProfiles.Find(version, DifferentHash(clientHash), commonHash) is null,
+        $"{version} must reject a different QQMusic.dll hash.");
+    Assert(QQMusicNativeNextProfiles.Find(version, clientHash, DifferentHash(commonHash)) is null,
+        $"{version} must reject a different QQMusicCommon.dll hash.");
+    Assert(QQMusicNativeNextProfiles.Find(version, clientHash, string.Empty) is null,
+        $"{version} must not accept a missing common DLL hash.");
+    return profile!;
+}
+
+// Keep the fixtures outside the loader's bundled profiles/qqmusic directory:
 // successful loading must therefore use BILINCM_QQMUSIC_PROFILE_DIR.
 var fixturePath = Path.Combine(AppContext.BaseDirectory, "fixtures", "22.61.json");
 var profileJson = File.ReadAllText(fixturePath);
+var newFixturePath = Path.Combine(AppContext.BaseDirectory, "fixtures", "22.71.json");
+var newProfileJson = File.ReadAllText(newFixturePath);
 var previousDirectory = Environment.GetEnvironmentVariable(environmentVariable);
 var temporaryDirectory = Directory.CreateTempSubdirectory(
     "Awoo.QQMusicExternalProfile.Tests-");
@@ -37,6 +70,7 @@ var temporaryDirectory = Directory.CreateTempSubdirectory(
 try
 {
     File.WriteAllText(Path.Combine(temporaryDirectory.FullName, "22.61.json"), profileJson);
+    File.WriteAllText(Path.Combine(temporaryDirectory.FullName, "22.71.json"), newProfileJson);
     var invalidProfiles = new Dictionary<string, string>
     {
         ["invalid-json"] = "{ invalid JSON",
@@ -57,24 +91,16 @@ try
     // The production loader caches its first read. Configure the environment
     // before touching All or Find, without reflection or test-only loader code.
     Environment.SetEnvironmentVariable(environmentVariable, temporaryDirectory.FullName);
-    var profile = QQMusicNativeNextProfiles.Find(version, clientHash, commonHash);
-    Assert(profile is not null, "The validated 22.61 profile must load from the external directory.");
-    Assert(QQMusicNativeNextProfiles.All.Count == 3,
-        "Malformed profiles must not replace or add to the two built-ins and one valid external profile.");
-    Assert(ReferenceEquals(profile, QQMusicNativeNextProfiles.Find(
-        version, clientHash.ToLowerInvariant(), commonHash.ToLowerInvariant())),
-        "SHA-256 matching must be case-insensitive.");
-
-    Assert(QQMusicNativeNextProfiles.Find("22.60", clientHash, commonHash) is null,
-        "A different QQ version must not use the 22.61 profile.");
-    Assert(QQMusicNativeNextProfiles.Find("22.61.0", clientHash, commonHash) is null,
-        "Version matching must remain exact.");
-    Assert(QQMusicNativeNextProfiles.Find(version, "0" + clientHash[1..], commonHash) is null,
-        "A different QQMusic.dll hash must be rejected.");
-    Assert(QQMusicNativeNextProfiles.Find(version, clientHash, "0" + commonHash[1..]) is null,
-        "A different QQMusicCommon.dll hash must be rejected.");
-    Assert(QQMusicNativeNextProfiles.Find(version, clientHash, string.Empty) is null,
-        "The external profile must not accept a missing common DLL hash.");
+    var profile = AssertIdentityLock(version, clientHash, commonHash);
+    var newProfile = AssertIdentityLock(newVersion, newClientHash, newCommonHash);
+    Assert(QQMusicNativeNextProfiles.All.Count == 4,
+        "Malformed profiles must not replace or add to the two built-ins and two valid external profiles.");
+    Assert(QQMusicNativeNextProfiles.Find(version, newClientHash, newCommonHash) is null
+        && QQMusicNativeNextProfiles.Find(newVersion, clientHash, commonHash) is null,
+        "The 22.61 and 22.71 profiles must not match each other's DLL pair.");
+    Assert(QQMusicNativeNextProfiles.Find(newVersion, newClientHash, commonHash) is null
+        && QQMusicNativeNextProfiles.Find(version, clientHash, newCommonHash) is null,
+        "DLLs from different player builds must not form a supported profile.");
 
     Assert(profile!.SingleSongPlayDispatchRva == 0x004A7934
         && profile.ExpectedPlayDispatchBytes.SequenceEqual(new byte[] { 0xE8, 0x57, 0x8D, 0x16, 0x00 })
@@ -91,6 +117,21 @@ try
         && !string.IsNullOrWhiteSpace(profile.Evidence),
         "The external document must preserve every validated 22.61 native field.");
 
+    Assert(newProfile.SingleSongPlayDispatchRva == 0x004B0CE4
+        && newProfile.ExpectedPlayDispatchBytes.SequenceEqual(new byte[] { 0xE8, 0xC7, 0x91, 0x16, 0x00 })
+        && newProfile.GetCatManagerRva == 0x0000F18A
+        && newProfile.GetQqUinExRva == 0x0002E283
+        && newProfile.SongItemConstructorRva == 0x0004BB70
+        && newProfile.SongItemDestructorRva == 0x0004B6B0
+        && newProfile.AddSongsRva == 0x00462600
+        && newProfile.HiddenCategoryIdRva == 0x00C6B1C8
+        && newProfile.GetListRootRva == 0x0063CAF0
+        && newProfile.GetListHelperRva == 0x0063CC50
+        && newProfile.GetCategoryCountRva == 0x005134E0
+        && newProfile.SongItemSize == 0xA0
+        && !string.IsNullOrWhiteSpace(newProfile.Evidence),
+        "The external document must preserve every mapped 22.71 native field.");
+
     Assert(QQMusicNativeNextProfiles.Find(
         "22.22",
         "FF0AB7911EB2ACF433F2DAF0FC4BA48FFFC64169CD822CE4D5B00E88FA180A50",
@@ -104,7 +145,7 @@ try
         is { AddSongsRva: 0x0043DA80 },
         "The 22.41 built-in profile must survive malformed external documents.");
 
-    Console.WriteLine("QQ Music external profile tests passed (22.61, exact version, dual hashes, malformed documents, built-ins).");
+    Console.WriteLine("QQ Music external profile tests passed (22.61 and 22.71, exact versions, dual hashes, mixed-build rejection, malformed documents, built-ins).");
 }
 finally
 {

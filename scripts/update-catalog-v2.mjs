@@ -49,7 +49,7 @@ const supported = {
     // 22.61.5 restores the 22.61.1 native implementation and its core contract.
     minimumCoreVersion: '1.1.10',
     playerVersionPolicy: '22.*',
-    testedPlayerVersion: '22.22 / 22.41 / 22.51 / 22.52 / 22.60 / 22.61',
+    testedPlayerVersion: '22.22 / 22.41 / 22.51 / 22.52 / 22.60 / 22.61 / 22.71',
     runtime: 'win-x86',
     versionPattern: /^\d+\.\d+\.\d+$/
   },

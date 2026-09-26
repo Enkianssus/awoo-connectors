@@ -15,5 +15,8 @@
     <None Include="..\..\profiles\qqmusic\22.61.json"
           Link="fixtures\22.61.json"
           CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\profiles\qqmusic\22.71.json"
+          Link="fixtures\22.71.json"
+          CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>
