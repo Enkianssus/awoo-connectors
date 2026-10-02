@@ -797,12 +797,12 @@ internal sealed class QQMusicPlayerAdapter :
             track,
             payload,
             cancellationToken).ConfigureAwait(false);
-        var after = await ProbeAsync(cancellationToken).ConfigureAwait(false);
         var accepted = result.Accepted;
         if (!accepted)
         {
             CancelSoftwareNext("QQ 原生插入被画像校验拒绝。");
         }
+        var after = await ProbeAsync(cancellationToken).ConfigureAwait(false);
         return new PlayerOperationResult(
             accepted
                 ? result.Indeterminate
@@ -828,13 +828,7 @@ internal sealed class QQMusicPlayerAdapter :
     private static bool IsNativeInsertAccepted(
         QQMusicNativeNextResult result,
         long expectedSongId) =>
-        result.Verification
-            == "NativeNextInsertedCurrentTrackUnchangedPendingNextVerification"
-        && result.NativeStage == 5
-        && result.GetCatManagerHresult >= 0
-        && result.GetSongInfoHresult >= 0
-        && result.AddSongsHresult >= 0
-        && result.ResolvedSongId == expectedSongId;
+        QQMusicNativeInsertOutcomePolicy.IsAccepted(result, expectedSongId);
 
     private PlayerOperationResult ArmSoftwareNext(
         PlayerSnapshot before,
@@ -1976,7 +1970,7 @@ internal sealed class QQMusicPlayerAdapter :
             lock (_nativeNextSync)
             {
                 PrunePendingNativeNextLocked(DateTimeOffset.UtcNow);
-                if (_pendingNativeNext.Any(pending =>
+                var existingPending = _pendingNativeNext.FirstOrDefault(pending =>
                         QQMusicWrongNextRecoveryPolicy
                             .ShouldReusePendingNativeNext(
                                 pending.InsertedAtSequence,
@@ -1986,12 +1980,13 @@ internal sealed class QQMusicPlayerAdapter :
                                 pending.Payload.SongId,
                                 pending.Payload.SongType,
                                 payload.SongId,
-                                payload.SongType)))
+                                payload.SongType));
+                if (existingPending is not null)
                 {
                     return new NativeNextEnsureResult(
                         true,
                         false,
-                        false,
+                        existingPending.VerificationIndeterminate,
                         "PendingNativeNextAlreadyInserted",
                         null,
                         null);
@@ -2004,13 +1999,26 @@ internal sealed class QQMusicPlayerAdapter :
             // is acquired, finish the mutation and ledger update before
             // releasing it; otherwise a timed-out caller can start a duplicate
             // insertion while the first native task is still running.
-            var result = await QQMusicNativeNextTransport.InsertAsync(
+            var result = await QQMusicType4Insertion.InsertAsync(
                     new QQMusicSongReference(
                         payload.SongId,
                         payload.SongType),
                     anchorProcessId.Value,
-                    TimeSpan.FromSeconds(6))
+                    TimeSpan.FromSeconds(12))
                 .ConfigureAwait(false);
+            // An uncertain Type4 operation is durably blocked for this QQ
+            // process epoch. Do not turn it into accepted work or arm an
+            // automatic next/recovery operation from an incomplete callback.
+            if (result.RequiresRestart)
+            {
+                return new NativeNextEnsureResult(
+                    false,
+                    result.PatchWriteAttempted,
+                    false,
+                    result.Verification,
+                    result.Error ?? "QQ 原生插入结果尚未确认，已停止后续自动操作；请先重启 QQ 再试。",
+                    result.FailureCode);
+            }
             var verified = IsNativeInsertAccepted(result, payload.SongId);
             var sideEffectPossible = !verified
                 && result.NativeStage >= 4

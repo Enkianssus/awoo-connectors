@@ -22,14 +22,16 @@ internal sealed record QQMusicPlaybackState(
 
 internal static class QQMusicNativeController
 {
-    public static IReadOnlyList<QQMusicWindowInfo> InspectWindows()
+    public static IReadOnlyList<QQMusicWindowInfo> InspectWindows() => InspectWindows(null);
+
+    private static IReadOnlyList<QQMusicWindowInfo> InspectWindows(int? expectedPid)
     {
         var windows = new List<QQMusicWindowInfo>();
         EnumWindows(
             (handle, _) =>
             {
                 GetWindowThreadProcessId(handle, out var processId);
-                if (processId == 0)
+                if (processId == 0 || (expectedPid is not null && processId != (uint)expectedPid.Value))
                 {
                     return true;
                 }
@@ -67,7 +69,20 @@ internal static class QQMusicNativeController
 
     public static QQMusicPlaybackState ReadPlaybackState()
     {
-        var window = FindMainWindow();
+        return ReadPlaybackStateCore(null);
+    }
+
+    // Caller has already bound this PID to an executable and creation epoch.
+    // A later exit simply produces an empty observation, never another QQ process.
+    public static QQMusicPlaybackState ReadPlaybackState(int expectedPid)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(expectedPid);
+        return ReadPlaybackStateCore(expectedPid);
+    }
+
+    private static QQMusicPlaybackState ReadPlaybackStateCore(int? expectedPid)
+    {
+        var window = FindMainWindow(expectedPid);
         if (window is null)
         {
             return new QQMusicPlaybackState(
@@ -89,9 +104,9 @@ internal static class QQMusicNativeController
             DateTimeOffset.Now);
     }
 
-    private static QQMusicWindowInfo? FindMainWindow()
+    private static QQMusicWindowInfo? FindMainWindow(int? expectedPid)
     {
-        return InspectWindows()
+        return InspectWindows(expectedPid)
             .Where(window => window.IsVisible)
             .OrderByDescending(window =>
                 QQMusicWindowTitleParser.Parse(window.Title) is not null)

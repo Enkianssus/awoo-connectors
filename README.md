@@ -23,7 +23,17 @@ older cores or connectors. NetEase `3.1.37.205354.7` advertises
 `snapshot-events-v1`; a new core subscribes with `subscribe` and receives exact
 snapshot event envelopes, while an older core continues to use `probe`.
 
-QQ Music connector 22.71.1 adds an exact profile for QQ Music 22.71 while keeping
+QQ Music connector 22.71.2 uses the reviewed Type 4 IPC command for type-0 songs
+on the exact QQ 22.71 installation, avoiding the auxiliary QQ process launch.
+It accelerates PE analysis and window inspection while retaining every profile
+check. Completed insertions can be repeated; uncertain operations remain blocked
+for the QQ process lifetime in a durable journal shared across connector versions.
+Each exposed trampoline retains 4 KiB until QQ exits to avoid freeing code before
+its return. Other supported QQ branches keep their previous transport. Nonzero
+song types on 22.71 are rejected before mutation. This local build is documented
+in [22.71.2 validation](docs/QQMUSIC_22_71_2_VALIDATION.md).
+
+QQ Music connector 22.71.1 added an exact profile for QQ Music 22.71 while keeping
 the native implementation restored in 22.61.5, without the Web bridge or its
 ownership contract. It includes exact compatibility profiles for QQ Music
 22.22, 22.41, 22.51, 22.52, 22.60, 22.61, and 22.71. On a matching DLL hash it calls QQ's internal

@@ -148,6 +148,8 @@ jobs:
             'QQMusicWindowTitleParser.Tests',
             'QQMusicWrongNextRecoveryPolicy.Tests',
             'QQMusicExternalProfile.Tests',
+            'QQMusicType4.Tests',
+            'QQMusicNativePerformance.Tests',
             'ConnectorRuntimeShutdown.Tests'
           )
           foreach ($project in $projects) {
@@ -279,12 +281,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $frameworkAsset = "artifacts/${{ steps.metadata.outputs.framework_asset }}"
+          $releaseNotes = "docs/releases/${{ github.ref_name }}.md"
+          $notesArguments = if (Test-Path -LiteralPath $releaseNotes) {
+            @('--notes-file', $releaseNotes)
+          } else {
+            @('--notes', "Awoo MusicBot ${{ steps.metadata.outputs.id }} connector v${{ steps.metadata.outputs.version }}. This forward v2 release contains only the signed Awoo framework-dependent package. Existing v1 releases remain available for older cores.")
+          }
           gh release create "${{ github.ref_name }}" `
             "$frameworkAsset" `
             "$frameworkAsset.sig" `
             "$frameworkAsset.sha256" `
             --title "${{ steps.metadata.outputs.id }} connector v${{ steps.metadata.outputs.version }}" `
-            --notes "Awoo MusicBot ${{ steps.metadata.outputs.id }} connector v${{ steps.metadata.outputs.version }}. This forward v2 release contains only the signed Awoo framework-dependent package. Existing v1 releases remain available for older cores."
+            @notesArguments
 
       - name: Prewarm connector assets in R2
         shell: pwsh
@@ -394,7 +402,7 @@ jobs:
 
       - name: Clean old connector R2 objects
         # This release is authorized to upload new assets, not purge old caches.
-        if: github.ref_name != 'qqmusic-v22.61.5' && github.ref_name != 'qqmusic-v22.71.1' && github.ref_name != 'netease-v3.1.41.205529.1' && github.ref_name != 'netease-v3.1.41.205529.2'
+        if: github.ref_name != 'qqmusic-v22.61.5' && github.ref_name != 'qqmusic-v22.71.1' && github.ref_name != 'qqmusic-v22.71.2' && github.ref_name != 'netease-v3.1.41.205529.1' && github.ref_name != 'netease-v3.1.41.205529.2'
         shell: pwsh
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.ENKIANSSUS_CLOUDFLARE_API_TOKEN }}

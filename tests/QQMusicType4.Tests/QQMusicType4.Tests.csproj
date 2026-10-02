@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <RuntimeIdentifier></RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
+    <PublishSingleFile>false</PublishSingleFile>
+    <EnableWindowsTargeting>false</EnableWindowsTargeting>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../src/QQMusic/QQMusicType4*.cs" Link="%(Filename)%(Extension)" />
+    <Compile Include="../../src/QQMusic/QQMusicNativeNextTransport.cs" Link="QQMusicNativeNextTransport.cs" />
+    <Compile Include="../../src/QQMusic/QQMusicNativeInsertOutcomePolicy.cs" Link="QQMusicNativeInsertOutcomePolicy.cs" />
+    <Compile Include="../../src/QQMusic/QQMusicNativeNextAnalyzer.cs" Link="QQMusicNativeNextAnalyzer.cs" />
+    <Compile Include="../../src/QQMusic/QQMusicNativeNextProfile.cs" Link="QQMusicNativeNextProfile.cs" />
+    <Compile Include="../../src/QQMusic/QQMusicNativeController.cs" Link="QQMusicNativeController.cs" />
+    <Compile Include="../../src/QQMusic/QQMusicWindowTitleParser.cs" Link="QQMusicWindowTitleParser.cs" />
+    <Compile Include="../../src/QQMusic/QQMusicPlaybackAnchorPolicy.cs" Link="QQMusicPlaybackAnchorPolicy.cs" />
+    <Compile Include="../../src/QQMusic/QQMusicCompatibilityTypes.cs" Link="QQMusicCompatibilityTypes.cs" />
+  </ItemGroup>
+</Project>

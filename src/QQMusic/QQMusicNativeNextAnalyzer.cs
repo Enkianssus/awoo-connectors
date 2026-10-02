@@ -591,6 +591,10 @@ internal static class QQMusicNativeNextAnalyzer
         private readonly IReadOnlyList<Section> _sections;
         private readonly int _sizeOfHeaders;
         private readonly int _exportDirectoryRva;
+        // Immutable, per-image results only: never reuse across files or operations.
+        private readonly Dictionary<string, IReadOnlyList<int>> _strings = new(StringComparer.Ordinal);
+        private readonly Dictionary<uint, IReadOnlyList<int>> _absoluteReferences = new();
+        private readonly Dictionary<int, IReadOnlyList<int>> _relativeCalls = new();
 
         private PortableExecutableImage(
             byte[] bytes,
@@ -726,43 +730,31 @@ internal static class QQMusicNativeNextAnalyzer
         public IReadOnlyList<int> FindRelativeCallSitesTo(
             int targetRva)
         {
+            if (_relativeCalls.TryGetValue(targetRva, out var cached)) return cached;
             var results = new List<int>();
             foreach (var section in _sections.Where(
                          section => section.Characteristics
                              .HasFlagValue(ImageScnMemExecute)))
             {
-                var available = Math.Min(
-                    section.RawSize,
-                    _bytes.Length - section.RawOffset);
-                for (var index = 0; index <= available - 5; index++)
-                {
-                    var offset = section.RawOffset + index;
-                    if (_bytes[offset] != 0xE8)
-                    {
-                        continue;
-                    }
-
-                    var callRva = section.VirtualAddress + index;
-                    var displacement =
-                        BitConverter.ToInt32(_bytes, offset + 1);
-                    if (callRva + 5 + displacement == targetRva)
-                    {
-                        results.Add(callRva);
-                    }
-                }
+                var available = Math.Min(section.RawSize, _bytes.Length - section.RawOffset);
+                if (available >= 5)
+                    ScanRelativeCalls(_bytes.AsSpan(section.RawOffset, available), section.VirtualAddress, targetRva, results);
             }
-
+            _relativeCalls.Add(targetRva, results);
             return results;
         }
 
         public IReadOnlyList<int> FindUtf16StringRvas(string value)
         {
-            return FindPatternRvas(
-                Encoding.Unicode.GetBytes(value + "\0"));
+            if (_strings.TryGetValue(value, out var cached)) return cached;
+            var result = FindPatternRvas(Encoding.Unicode.GetBytes(value + "\0"));
+            _strings.Add(value, result);
+            return result;
         }
 
         public IReadOnlyList<int> FindAbsoluteReferences(uint value)
         {
+            if (_absoluteReferences.TryGetValue(value, out var cached)) return cached;
             var pattern = BitConverter.GetBytes(value);
             var results = new List<int>();
             foreach (var section in _sections.Where(
@@ -771,7 +763,7 @@ internal static class QQMusicNativeNextAnalyzer
             {
                 FindPatternInSection(section, pattern, results);
             }
-
+            _absoluteReferences.Add(value, results);
             return results;
         }
 
@@ -859,21 +851,9 @@ internal static class QQMusicNativeNextAnalyzer
             byte[] pattern,
             ICollection<int> results)
         {
-            var available = Math.Min(
-                section.RawSize,
-                _bytes.Length - section.RawOffset);
-            for (var index = 0;
-                 index <= available - pattern.Length;
-                 index++)
-            {
-                if (_bytes.AsSpan(
-                        section.RawOffset + index,
-                        pattern.Length)
-                    .SequenceEqual(pattern))
-                {
-                    results.Add(section.VirtualAddress + index);
-                }
-            }
+            var available = Math.Min(section.RawSize, _bytes.Length - section.RawOffset);
+            if (available >= pattern.Length)
+                ScanPattern(_bytes.AsSpan(section.RawOffset, available), pattern, section.VirtualAddress, results);
         }
 
         private Section? FindSection(int rva)
@@ -965,6 +945,39 @@ internal static class QQMusicNativeNextAnalyzer
             int RawSize,
             int RawOffset,
             uint Characteristics);
+    }
+
+    // The searchable span is exactly the current section's on-disk bytes.
+    // Moving one byte after a match intentionally preserves overlapping matches.
+    internal static void ScanPattern(ReadOnlySpan<byte> bytes, ReadOnlySpan<byte> pattern,
+        int virtualAddress, ICollection<int> results)
+    {
+        var index = 0;
+        while (index <= bytes.Length - pattern.Length)
+        {
+            var found = bytes[index..].IndexOf(pattern);
+            if (found < 0) break;
+            index += found;
+            results.Add(virtualAddress + index);
+            index++;
+        }
+    }
+
+    internal static void ScanRelativeCalls(ReadOnlySpan<byte> bytes, int virtualAddress,
+        int targetRva, ICollection<int> results)
+    {
+        var index = 0;
+        while (index <= bytes.Length - 5)
+        {
+            // The final four bytes cannot start a complete relative call.
+            var found = bytes.Slice(index, bytes.Length - 4 - index).IndexOf((byte)0xE8);
+            if (found < 0) break;
+            index += found;
+            var callRva = virtualAddress + index;
+            var displacement = BitConverter.ToInt32(bytes.Slice(index + 1, 4));
+            if (callRva + 5 + displacement == targetRva) results.Add(callRva);
+            index++;
+        }
     }
 
     private static bool HasFlagValue(this uint value, uint flag)

@@ -32,7 +32,10 @@ internal sealed record QQMusicNativeNextResult(
     long ElapsedMilliseconds,
     string Transport,
     string? Error,
-    string? FailureCode);
+    string? FailureCode,
+    bool PatchWriteAttempted = false,
+    bool RemoteMemoryRetained = false,
+    bool RequiresRestart = false);
 
 /// <summary>
 /// Executes the same AddSongs(mode=0) operation as a calibrated QQ Music
@@ -74,9 +77,23 @@ internal static class QQMusicNativeNextTransport
 
     private static readonly SemaphoreSlim OperationGate = new(1, 1);
 
-    public static async Task<QQMusicNativeNextResult> InsertAsync(
+    public static Task<QQMusicNativeNextResult> InsertAsync(
+        QQMusicSongReference song, int anchorProcessId, TimeSpan? responseWindow = null) =>
+        InsertCoreAsync(song, anchorProcessId, null, null, null, responseWindow);
+
+    internal static Task<QQMusicNativeNextResult> InsertType4Async(
+        QQMusicSongReference song, int anchorProcessId,
+        Func<int, QQMusicSongReference, Type4Transport.DeliveryReceipt> sender,
+        Action? validateIdentity, Action<SafeProcessHandle>? validateOpenedHandle,
+        TimeSpan? responseWindow = null) =>
+        InsertCoreAsync(song, anchorProcessId, sender, validateIdentity, validateOpenedHandle, responseWindow);
+
+    private static async Task<QQMusicNativeNextResult> InsertCoreAsync(
         QQMusicSongReference song,
         int anchorProcessId,
+        Func<int, QQMusicSongReference, Type4Transport.DeliveryReceipt>? sendSingleSong,
+        Action? validateIdentity,
+        Action<SafeProcessHandle>? validateOpenedHandle,
         TimeSpan? responseWindow = null)
     {
         if (song.SongId is <= 0 or > uint.MaxValue)
@@ -93,6 +110,9 @@ internal static class QQMusicNativeNextTransport
                     () => Insert(
                         song,
                         anchorProcessId,
+                        sendSingleSong,
+                        validateIdentity,
+                        validateOpenedHandle,
                         responseWindow ?? TimeSpan.FromSeconds(8)))
                 .ConfigureAwait(false);
         }
@@ -105,10 +125,13 @@ internal static class QQMusicNativeNextTransport
     private static QQMusicNativeNextResult Insert(
         QQMusicSongReference song,
         int anchorProcessId,
+        Func<int, QQMusicSongReference, Type4Transport.DeliveryReceipt>? sendSingleSong,
+        Action? validateIdentity,
+        Action<SafeProcessHandle>? validateOpenedHandle,
         TimeSpan responseWindow)
     {
         var stopwatch = Stopwatch.StartNew();
-        var before = QQMusicNativeController.ReadPlaybackState();
+        var before = QQMusicNativeController.ReadPlaybackState(anchorProcessId);
         var foregroundBefore = GetForegroundWindow();
         var commandSent = false;
         var helperExited = false;
@@ -219,6 +242,9 @@ internal static class QQMusicNativeNextTransport
                         : " " + failedChecks));
             }
 
+            if (sendSingleSong is not null) Type4Contract.VerifyProfile(profile);
+            validateIdentity?.Invoke();
+
             processHandle = OpenProcess(
                 ProcessVmOperation
                     | ProcessVmRead
@@ -230,6 +256,9 @@ internal static class QQMusicNativeNextTransport
             {
                 throw CreateWin32Exception("OpenProcess");
             }
+            // Bind authorization to THIS opened kernel process object before
+            // allocating/writing anything. A later PID lookup alone is racy.
+            validateOpenedHandle?.Invoke(processHandle);
 
             patchAddress = nint.Add(
                 target.ClientModuleBase,
@@ -283,16 +312,29 @@ internal static class QQMusicNativeNextTransport
                 redirectBytes);
             patchApplied = true;
 
-            using var helper = StartSingleSongHelper(
-                target.ExecutablePath,
-                song);
-            commandSent = true;
-            helperExited = helper.WaitForExit(3500);
-            if (!helperExited)
+            if (sendSingleSong is not null)
             {
-                TryStopUnexpectedHelper(helper);
-                throw new TimeoutException(
-                    "QQMusic.exe 单实例命令进程未按时退出。");
+                // A transport BOOL is not a native completion ACK. Failed sends
+                // still observe the callback; no retry or launch fallback exists.
+                var receipt = sendSingleSong(target.Process.Id, song);
+                commandSent = receipt.SendAttempted;
+                if (!Type4OutcomePolicy.MustObserveStage(receipt))
+                    throw new InvalidOperationException("Transport rejected before any send.");
+                helperExited = true; // sender returned; no child process exists.
+            }
+            else
+            {
+                using var helper = StartSingleSongHelper(
+                    target.ExecutablePath,
+                    song);
+                commandSent = true;
+                helperExited = helper.WaitForExit(3500);
+                if (!helperExited)
+                {
+                    TryStopUnexpectedHelper(helper);
+                    throw new TimeoutException(
+                        "QQMusic.exe 单实例命令进程未按时退出。");
+                }
             }
 
             var deadline = DateTime.UtcNow + responseWindow;
@@ -415,14 +457,16 @@ internal static class QQMusicNativeNextTransport
                 originalCodeRestored = true;
             }
 
-            // The block is safe to release only after the trampoline reached
-            // its final stage. On any timeout it is deliberately leaked
-            // (4 KiB inside QQMusic.exe) instead of risking a return into
-            // freed executable memory.
+            // Stage 5 is stored BEFORE popad/popf/ret, so it is not proof that
+            // no instruction pointer still references the block. The connector
+            // retains all 4 KiB after ANY patch write attempt until QQ
+            // exits. Only an allocation never exposed by a patch may be freed.
+            if (remoteBlock == 0)
+                remoteMemoryReleased = true;
             if (remoteBlock != 0
                 && processHandle is not null
                 && !processHandle.IsInvalid
-                && stage == 5)
+                && Type4OutcomePolicy.CanReleaseRemoteMemory(patchWriteAttempted))
             {
                 try
                 {
@@ -461,7 +505,7 @@ internal static class QQMusicNativeNextTransport
             operationMutex?.Dispose();
         }
 
-        var after = QQMusicNativeController.ReadPlaybackState();
+        var after = QQMusicNativeController.ReadPlaybackState(anchorProcessId);
         stopwatch.Stop();
         var foregroundUnchanged =
             foregroundBefore == GetForegroundWindow();
@@ -485,6 +529,11 @@ internal static class QQMusicNativeNextTransport
             foregroundUnchanged,
             currentWindowTrackUnchanged,
             error);
+
+        // Legacy branches keep their public acceptance contract; memory is
+        // nevertheless retained because stage 5 precedes the final return.
+        if (sendSingleSong is null && verification == Type4OutcomePolicy.AcceptedVerification)
+            verification = "NativeNextInsertedCurrentTrackUnchangedPendingNextVerification";
 
         return new QQMusicNativeNextResult(
             song,
@@ -516,7 +565,12 @@ internal static class QQMusicNativeNextTransport
                 + "-> GetSongInfo(last resolved item) "
                 + "-> AddSongs(mode=0)",
             error,
-            failureCode);
+            failureCode,
+            patchWriteAttempted,
+            remoteBlock != 0 && !remoteMemoryReleased,
+            patchWriteAttempted && !(commandSent && stage == 5 && getCatManagerHresult >= 0
+                && getSongInfoHresult >= 0 && addSongsHresult >= 0
+                && resolvedSongId == (uint)song.SongId && originalCodeRestored && error is null));
     }
 
     private static byte[] BuildUiTrampoline(
@@ -912,7 +966,7 @@ internal static class QQMusicNativeNextTransport
             return "NativeNextRequestRejected";
         }
 
-        if (!originalCodeRestored || !remoteMemoryReleased)
+        if (!originalCodeRestored)
         {
             return "NativeNextCleanupFailed";
         }
@@ -932,7 +986,9 @@ internal static class QQMusicNativeNextTransport
         }
 
         return currentTrackUnchanged
-            ? "NativeNextInsertedCurrentTrackUnchangedPendingNextVerification"
+            ? remoteMemoryReleased
+                ? "NativeNextInsertedCurrentTrackUnchangedPendingNextVerification"
+                : "NativeNextInsertedMemoryRetainedPendingNextVerification"
             : "NativeNextUnexpectedlyChangedCurrentTrack";
     }
 

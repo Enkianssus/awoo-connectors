@@ -127,7 +127,7 @@ foreach ($expectedProfile in $expectedProfiles) {
     }
 }
 
-if ([string]$project.Project.PropertyGroup.Version -ne '22.71.1') {
+if ([string]$project.Project.PropertyGroup.Version -ne '22.71.2') {
     throw 'QQ Music connector version must follow the tested QQ Music 22.71 branch.'
 }
 if ($adapter -notmatch '22\.22 / 22\.41 / 22\.51 / 22\.52 / 22\.60 / 22\.61 / 22\.71') {
@@ -138,3 +138,36 @@ if ($catalogScript -notmatch "testedPlayerVersion: '22\.22 / 22\.41 / 22\.51 / 2
 }
 
 Write-Output 'QQMusicNativeNextTransportPolicy.Tests passed.'
+
+$type4Root = Join-Path $PSScriptRoot '..\src\QQMusic'
+$type4Insertion = Get-Content -Raw -Encoding UTF8 (Join-Path $type4Root 'QQMusicType4Insertion.cs')
+$type4Contract = Get-Content -Raw -Encoding UTF8 (Join-Path $type4Root 'QQMusicType4Contract.cs')
+$type4Sender = Get-Content -Raw -Encoding UTF8 (Join-Path $type4Root 'QQMusicType4Transport.cs')
+$type4Journal = Get-Content -Raw -Encoding UTF8 (Join-Path $type4Root 'QQMusicType4Journal.cs')
+if ($type4Insertion -notmatch 'version != "22\.71"' -or
+    $type4Insertion -notmatch 'QQMusicNativeNextTransport\.InsertAsync' -or
+    $type4Insertion -notmatch 'Type4Journal\.Begin' -or
+    $type4Insertion -notmatch 'VerifyOpenedHandle' -or
+    $type4Insertion -notmatch 'TimeSpan\.FromSeconds\(12\)') {
+    throw 'Type4 must remain an exact-22.71, journaled, opened-handle-verified path with a bounded stage observation.'
+}
+if ($type4Contract -notmatch '10ED93D19DDD4934111A7D789790DFA6953450F6F3DBD51E2CCF80BEB6B8F027' -or
+    $type4Contract -notmatch 'request\.SongType != 0' -or
+    $type4Sender -notmatch 'songType != 0' -or
+    $type4Sender -match 'Process\.Start\(') {
+    throw 'Type4 must retain its reviewed API hash, refuse nonzero song types, and never launch a fallback sender.'
+}
+if ($transport -notmatch 'Type4OutcomePolicy\.CanReleaseRemoteMemory\(patchWriteAttempted\)' -or
+    $transport -match '(?s)&& stage == 5\)\s*\{\s*try\s*\{\s*remoteMemoryReleased = VirtualFreeEx' -or
+    $type4Insertion -notmatch 'CanReleaseRemoteMemory\(bool patchWriteAttempted\) => !patchWriteAttempted' -or
+    $transport -notmatch 'Type4OutcomePolicy\.MustObserveStage\(receipt\)') {
+    throw 'Exposed trampoline memory must be retained; every attempted Type4 send must observe native completion.'
+}
+if ($type4Journal -notmatch 'Environment\.SpecialFolder\.LocalApplicationData' -or
+    $type4Journal -notmatch 'Path\.Combine\(directory, "operations", epoch\)' -or
+    $type4Journal -notmatch 'FileShare\.None' -or
+    $type4Journal -notmatch 'FileMode\.CreateNew' -or
+    $type4Journal -match 'qq-silent-research|repeatable|AppContext\.BaseDirectory') {
+    throw 'Type4 journal must use a stable user path, epoch-scoped receipts, exclusive leases, and atomic operation reservations.'
+}
+Write-Output 'QQMusic Type4 lifecycle policy checks passed.'
