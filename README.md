@@ -23,6 +23,13 @@ older cores or connectors. NetEase `3.1.37.205354.7` advertises
 `snapshot-events-v1`; a new core subscribes with `subscribe` and receives exact
 snapshot event envelopes, while an older core continues to use `probe`.
 
+QQ Music connector 22.71.3 fixes search requests being abandoned when the
+primary catalog returns an HTTP error, times out, or returns an invalid response.
+It tries the existing alternate search endpoint once within a shared timeout
+budget, respects caller cancellation, and identifies the failed endpoints in
+errors without logging search text or response bodies. Native insertion and
+the minimum core version remain unchanged.
+
 QQ Music connector 22.71.2 uses the reviewed Type 4 IPC command for type-0 songs
 on the exact QQ 22.71 installation, avoiding the auxiliary QQ process launch.
 It accelerates PE analysis and window inspection while retaining every profile

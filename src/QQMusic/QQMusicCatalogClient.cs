@@ -25,12 +25,29 @@ internal sealed class QQMusicCatalogClient : IDisposable
         "https://c.y.qq.com/soso/fcgi-bin/client_search_cp";
 
     private readonly HttpClient _httpClient;
+    private readonly TimeSpan _primaryTimeout;
+    private readonly TimeSpan _totalTimeout;
 
     public QQMusicCatalogClient()
+        : this(new HttpClientHandler(), TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(12))
     {
-        _httpClient = new HttpClient
+    }
+
+    internal QQMusicCatalogClient(
+        HttpMessageHandler handler,
+        TimeSpan primaryTimeout,
+        TimeSpan totalTimeout)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        ValidateTimeout(primaryTimeout, nameof(primaryTimeout));
+        ValidateTimeout(totalTimeout, nameof(totalTimeout));
+        _primaryTimeout = primaryTimeout;
+        _totalTimeout = totalTimeout;
+        // Keep HttpClientHandler's normal system/network defaults. Per-search
+        // cancellation budgets include both HTTP headers and the response body.
+        _httpClient = new HttpClient(handler, disposeHandler: true)
         {
-            Timeout = TimeSpan.FromSeconds(10)
+            Timeout = Timeout.InfiniteTimeSpan
         };
         _httpClient.DefaultRequestHeaders.Referrer =
             new Uri("https://y.qq.com/");
@@ -44,45 +61,41 @@ internal sealed class QQMusicCatalogClient : IDisposable
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(query);
-
-        var raw = await SearchRawAsync(
-            query,
-            count,
-            cancellationToken).ConfigureAwait(false);
-        using var document = JsonDocument.Parse(raw);
-
-        if (!TryGetProperty(
-                document.RootElement,
-                out var list,
-                "search",
-                "data",
-                "body",
-                "song",
-                "list")
-            || list.ValueKind != JsonValueKind.Array)
+        cancellationToken.ThrowIfCancellationRequested();
+        using var total = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        total.CancelAfter(_totalTimeout);
+        SearchAttempt primary;
+        using (var primaryBudget = CancellationTokenSource.CreateLinkedTokenSource(total.Token))
         {
-            return Array.Empty<QQMusicCatalogSong>();
+            primaryBudget.CancelAfter(_primaryTimeout);
+            primary = await SearchEndpointAsync(query, count, legacy: false,
+                cancellationToken, primaryBudget.Token).ConfigureAwait(false);
         }
-
-        var songs = new List<QQMusicCatalogSong>();
-        foreach (var item in list.EnumerateArray())
+        cancellationToken.ThrowIfCancellationRequested();
+        if (primary.Songs is { Count: > 0 } primarySongs)
         {
-            if (TryParseSong(item, out var song))
-            {
-                songs.Add(song);
-            }
+            var songs = BackfillMissingAlbumArtwork(primarySongs);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!total.IsCancellationRequested) return songs;
+            primary = new(null, "total timeout");
         }
-
-        if (songs.Count > 0)
+        if (total.IsCancellationRequested)
         {
-            return BackfillMissingAlbumArtwork(songs);
+            throw SearchFailure(primary.Failure, "total timeout (not attempted)");
         }
-
-        var legacySongs = await SearchLegacyAsync(
-                query,
-                count,
-                cancellationToken).ConfigureAwait(false);
-        return BackfillMissingAlbumArtwork(legacySongs);
+        // Exactly one fallback. It receives the remaining total budget, not a
+        // fresh full timeout, and a caller cancellation never reaches this send.
+        var legacy = await SearchEndpointAsync(query, count, legacy: true,
+            cancellationToken, total.Token).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (legacy.Songs is not null)
+        {
+            var songs = BackfillMissingAlbumArtwork(legacy.Songs);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!total.IsCancellationRequested) return songs;
+            legacy = new(null, "total timeout");
+        }
+        throw SearchFailure(primary.Failure, legacy.Failure);
     }
 
     public async Task<string> SearchRawAsync(
@@ -91,7 +104,15 @@ internal sealed class QQMusicCatalogClient : IDisposable
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(query);
+        cancellationToken.ThrowIfCancellationRequested();
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        budget.CancelAfter(_totalTimeout);
+        return await AwaitRequestAsync(SendPrimaryRawAsync(query, count, budget.Token), budget.Token)
+            .ConfigureAwait(false);
+    }
 
+    private async Task<string> SendPrimaryRawAsync(string query, int count, CancellationToken cancellationToken)
+    {
         var payload = new
         {
             comm = new
@@ -114,9 +135,11 @@ internal sealed class QQMusicCatalogClient : IDisposable
             }
         };
 
-        using var response = await _httpClient.PostAsJsonAsync(
-            SearchEndpoint,
-            payload,
+        using var request = new HttpRequestMessage(HttpMethod.Post, SearchEndpoint)
+        {
+            Content = JsonContent.Create(payload)
+        };
+        using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead,
             cancellationToken).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
         return await response.Content.ReadAsStringAsync(
@@ -129,6 +152,15 @@ internal sealed class QQMusicCatalogClient : IDisposable
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(query);
+        cancellationToken.ThrowIfCancellationRequested();
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        budget.CancelAfter(_totalTimeout);
+        return await AwaitRequestAsync(SendLegacyRawAsync(query, count, budget.Token), budget.Token)
+            .ConfigureAwait(false);
+    }
+
+    private async Task<string> SendLegacyRawAsync(string query, int count, CancellationToken cancellationToken)
+    {
         var parameters = new Dictionary<string, string>
         {
             ["format"] = "json",
@@ -148,74 +180,114 @@ internal sealed class QQMusicCatalogClient : IDisposable
             parameters.Select(pair =>
                 $"{Uri.EscapeDataString(pair.Key)}="
                 + Uri.EscapeDataString(pair.Value)));
-        return await _httpClient.GetStringAsync(
-            $"{LegacySearchEndpoint}?{queryString}",
+        using var request = new HttpRequestMessage(HttpMethod.Get, $"{LegacySearchEndpoint}?{queryString}");
+        using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead,
             cancellationToken).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task<IReadOnlyList<QQMusicCatalogSong>>
-        SearchLegacyAsync(
-            string query,
-            int count,
-            CancellationToken cancellationToken)
+    private async Task<SearchAttempt> SearchEndpointAsync(string query, int count, bool legacy,
+        CancellationToken callerCancellation, CancellationToken budget)
     {
-        var raw = await SearchLegacyRawAsync(
-            query,
-            count,
-            cancellationToken).ConfigureAwait(false);
-        using var document = JsonDocument.Parse(raw);
-        if (!TryGetProperty(
-                document.RootElement,
-                out var list,
-                "data",
-                "song",
-                "list")
-            || list.ValueKind != JsonValueKind.Array)
+        callerCancellation.ThrowIfCancellationRequested();
+        try
         {
-            return Array.Empty<QQMusicCatalogSong>();
+            budget.ThrowIfCancellationRequested();
+            var raw = await AwaitRequestAsync(legacy
+                    ? SendLegacyRawAsync(query, count, budget)
+                    : SendPrimaryRawAsync(query, count, budget), budget)
+                .ConfigureAwait(false);
+            budget.ThrowIfCancellationRequested();
+            using var document = JsonDocument.Parse(raw);
+            var root = document.RootElement;
+            ValidateApiCode(root);
+            if (!legacy && root.ValueKind == JsonValueKind.Object && root.TryGetProperty("search", out var search))
+                ValidateApiCode(search);
+            var path = legacy ? new[] { "data", "song", "list" } : ["search", "data", "body", "song", "list"];
+            if (!TryGetProperty(root, out var list, path) || list.ValueKind != JsonValueKind.Array)
+                return new(null, "invalid list shape");
+            var songs = new List<QQMusicCatalogSong>();
+            foreach (var item in list.EnumerateArray())
+            {
+                budget.ThrowIfCancellationRequested();
+                if (TryParseCatalogSong(item, legacy, out var song)) songs.Add(song);
+            }
+            budget.ThrowIfCancellationRequested();
+            if (songs.Count != 0 || (legacy && list.GetArrayLength() == 0)) return new(songs, null);
+            return new(null, list.GetArrayLength() == 0 ? "empty-results" : "no valid songs");
         }
-
-        var songs = new List<QQMusicCatalogSong>();
-        foreach (var item in list.EnumerateArray())
+        catch (OperationCanceledException) when (callerCancellation.IsCancellationRequested) { throw; }
+        catch (OperationCanceledException) { return new(null, "timeout"); }
+        catch (HttpRequestException exception)
         {
-            var songId = ReadInt64(item, "songid");
-            var songMid = ReadString(item, "songmid");
-            var title = ReadString(item, "songname");
-            if (songId <= 0
-                || string.IsNullOrWhiteSpace(songMid)
-                || string.IsNullOrWhiteSpace(title))
-            {
-                continue;
-            }
-
-            var singers = new List<string>();
-            if (item.TryGetProperty("singer", out var singerArray)
-                && singerArray.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var singer in singerArray.EnumerateArray())
-                {
-                    var name = ReadString(singer, "name");
-                    if (!string.IsNullOrWhiteSpace(name))
-                    {
-                        singers.Add(name);
-                    }
-                }
-            }
-
-            songs.Add(new QQMusicCatalogSong(
-                songId,
-                songMid,
-                checked((int)ReadInt64(item, "songtype")),
-                title,
-                string.Join(" / ", singers),
-                ReadString(item, "albumname"),
-                ReadString(item, "albummid"),
-                checked((int)ReadInt64(item, "interval")),
-                true));
+            return new(null, exception.StatusCode is { } status ? $"HTTP {(int)status}" : "HTTP transport failure");
         }
-
-        return songs;
+        catch (JsonException) { return new(null, "invalid JSON"); }
+        catch (CatalogResponseException exception) { return new(null, exception.Message); }
     }
+
+    private static bool TryParseCatalogSong(JsonElement item, bool legacy, out QQMusicCatalogSong song)
+    {
+        song = null!;
+        if (item.ValueKind != JsonValueKind.Object) return false;
+        try { return legacy ? TryParseLegacySong(item, out song) : TryParseSong(item, out song); }
+        catch (InvalidOperationException) { return false; }
+        catch (OverflowException) { return false; }
+    }
+
+    private static bool TryParseLegacySong(JsonElement item, out QQMusicCatalogSong song)
+    {
+        song = null!;
+        var songId = ReadInt64(item, "songid");
+        var songMid = ReadString(item, "songmid");
+        var title = ReadString(item, "songname");
+        if (songId <= 0 || string.IsNullOrWhiteSpace(songMid) || string.IsNullOrWhiteSpace(title)) return false;
+        var singers = new List<string>();
+        if (item.TryGetProperty("singer", out var singerArray) && singerArray.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var singer in singerArray.EnumerateArray())
+            {
+                var name = ReadString(singer, "name");
+                if (!string.IsNullOrWhiteSpace(name)) singers.Add(name);
+            }
+        }
+        song = new QQMusicCatalogSong(songId, songMid, checked((int)ReadInt64(item, "songtype")), title,
+            string.Join(" / ", singers), ReadString(item, "albumname"), ReadString(item, "albummid"),
+            checked((int)ReadInt64(item, "interval")), true);
+        return true;
+    }
+
+    private static void ValidateApiCode(JsonElement value)
+    {
+        if (value.ValueKind != JsonValueKind.Object || !value.TryGetProperty("code", out var code)) return;
+        if (code.ValueKind != JsonValueKind.Number || !code.TryGetInt64(out var number))
+            throw new CatalogResponseException("API code invalid");
+        if (number != 0) throw new CatalogResponseException($"API code {number}");
+    }
+
+    private static async Task<string> AwaitRequestAsync(Task<string> request, CancellationToken budget)
+    {
+        // A handler that is slow to honor cancellation must not extend the
+        // caller's total budget. Its own async method still owns/disposes its
+        // request and any eventual response; observe a later failure as well.
+        _ = request.ContinueWith(completed => { _ = completed.Exception; }, CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+        return await request.WaitAsync(budget).ConfigureAwait(false);
+    }
+
+    private static HttpRequestException SearchFailure(string? primary, string? legacy) =>
+        new($"QQ search failed: primary[musicu.fcg]: {primary ?? "no results"}; "
+            + $"legacy[client_search_cp]: {legacy ?? "no results"}.");
+
+    private static void ValidateTimeout(TimeSpan timeout, string parameter)
+    {
+        if (timeout <= TimeSpan.Zero || timeout.TotalMilliseconds > uint.MaxValue - 1)
+            throw new ArgumentOutOfRangeException(parameter);
+    }
+
+    private sealed record SearchAttempt(IReadOnlyList<QQMusicCatalogSong>? Songs, string? Failure);
+    private sealed class CatalogResponseException(string message) : Exception(message);
 
     public void Dispose()
     {
