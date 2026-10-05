@@ -86,40 +86,8 @@ internal sealed class Type4Journal : IDisposable
         try
         {
             var statePath = prefix + ".json";
-            JournalRecord? previous = null;
-            if (File.Exists(statePath))
-            {
-                try { previous = Read(statePath); }
-                catch { throw new JournalRejectedException("journal-invalid-or-incomplete"); }
-                if (!JournalPolicy.CanContinue(previous, request))
-                    throw new JournalRejectedException("journal-pending-or-blocked");
-                var archivedPath = Path.Combine(operations, previous.Request.OperationId.ToString("D") + ".json");
-                try
-                {
-                    if (JsonSerializer.Serialize(previous, JsonOptions) != JsonSerializer.Serialize(Read(archivedPath), JsonOptions))
-                        throw new JournalRejectedException("journal-archive-mismatch");
-                }
-                catch { throw new JournalRejectedException("journal-archive-mismatch"); }
-            }
+            var previous = ReadValidatedHistory(directory, request);
             Directory.CreateDirectory(operations);
-            // A crash between operation reservation and process-state publish
-            // leaves an orphan pending archive. Conservatively block it too;
-            // never infer that missing process state makes an old request safe.
-            foreach (var archivePath in Directory.EnumerateFiles(operations, "*.json"))
-            {
-                JournalRecord archived;
-                try { archived = Read(archivePath); }
-                catch { throw new JournalRejectedException("journal-invalid-or-incomplete"); }
-                if (archived.Request is null || !Guid.TryParseExact(Path.GetFileNameWithoutExtension(archivePath), "D", out var archivedId)
-                    || archivedId != archived.Request.OperationId)
-                    throw new JournalRejectedException("journal-archive-mismatch");
-                if (!JournalPolicy.SameIdentity(archived.Request, request))
-                    throw new JournalRejectedException("journal-archive-mismatch");
-                if (!JournalPolicy.CanContinue(archived, request))
-                    throw new JournalRejectedException("journal-pending-or-blocked");
-                if (previous is null || archived.CompletedCount > previous.CompletedCount || archived.RetainedBytes > previous.RetainedBytes)
-                    throw new JournalRejectedException("journal-archive-mismatch");
-            }
             var operationPath = Path.Combine(operations, request.OperationId.ToString("D") + ".json");
             // CreateNew is also the global operation-Guid reservation: a repeated
             // Guid cannot execute even against another process journal.
@@ -141,6 +109,75 @@ internal sealed class Type4Journal : IDisposable
             return new Type4Journal(lease, directory, statePath, operationPath, pending);
         }
         catch { lease.Dispose(); throw; }
+    }
+
+    // Read-only admission for automatic playback controls, including after a
+    // connector reconnect. Never reserve an operation, create a directory, or
+    // rewrite receipts here. Begin still revalidates under its mutation lease.
+    internal static void CheckAutomaticAdmission(string directory, int processId,
+        long startTicks, string executable)
+    {
+        var request = new Type4Request(Guid.NewGuid(), processId, startTicks, executable, 1, 0);
+        Type4Contract.ValidateRequest(request);
+        var epoch = processId + "-" + startTicks;
+        var leasePath = Path.Combine(directory, epoch + ".lease");
+        FileStream? admissionLease = null;
+        try
+        {
+            if (File.Exists(leasePath))
+            {
+                try { admissionLease = new FileStream(leasePath, FileMode.Open, FileAccess.Read, FileShare.None); }
+                catch (IOException) { throw new JournalRejectedException("journal-lease-busy"); }
+            }
+            else if (File.Exists(Path.Combine(directory, epoch + ".json"))
+                || Directory.Exists(Path.Combine(directory, "operations", epoch)))
+            {
+                throw new JournalRejectedException("journal-lease-missing");
+            }
+            ReadValidatedHistory(directory, request);
+        }
+        finally { admissionLease?.Dispose(); }
+    }
+
+    private static JournalRecord? ReadValidatedHistory(string directory, Type4Request request)
+    {
+        var epoch = request.ProcessId + "-" + request.StartTicks;
+        var statePath = Path.Combine(directory, epoch + ".json");
+        var operations = Path.Combine(directory, "operations", epoch);
+        JournalRecord? previous = null;
+        if (File.Exists(statePath))
+        {
+            try { previous = Read(statePath); }
+            catch { throw new JournalRejectedException("journal-invalid-or-incomplete"); }
+            if (!JournalPolicy.CanContinue(previous, request))
+                throw new JournalRejectedException("journal-pending-or-blocked");
+            var archivedPath = Path.Combine(operations, previous.Request.OperationId.ToString("D") + ".json");
+            try
+            {
+                if (JsonSerializer.Serialize(previous, JsonOptions) != JsonSerializer.Serialize(Read(archivedPath), JsonOptions))
+                    throw new JournalRejectedException("journal-archive-mismatch");
+            }
+            catch { throw new JournalRejectedException("journal-archive-mismatch"); }
+        }
+        // A crash between operation reservation and process-state publication
+        // leaves an orphan archive. Absence of process state is not permission
+        // to continue in that case.
+        if (Directory.Exists(operations)) foreach (var archivePath in Directory.EnumerateFiles(operations, "*.json"))
+        {
+            JournalRecord archived;
+            try { archived = Read(archivePath); }
+            catch { throw new JournalRejectedException("journal-invalid-or-incomplete"); }
+            if (archived.Request is null || !Guid.TryParseExact(Path.GetFileNameWithoutExtension(archivePath), "D", out var archivedId)
+                || archivedId != archived.Request.OperationId)
+                throw new JournalRejectedException("journal-archive-mismatch");
+            if (!JournalPolicy.SameIdentity(archived.Request, request))
+                throw new JournalRejectedException("journal-archive-mismatch");
+            if (!JournalPolicy.CanContinue(archived, request))
+                throw new JournalRejectedException("journal-pending-or-blocked");
+            if (previous is null || archived.CompletedCount > previous.CompletedCount || archived.RetainedBytes > previous.RetainedBytes)
+                throw new JournalRejectedException("journal-archive-mismatch");
+        }
+        return previous;
     }
 
     internal JournalRecord Finish(Type4Receipt result, NativeEvidence evidence)

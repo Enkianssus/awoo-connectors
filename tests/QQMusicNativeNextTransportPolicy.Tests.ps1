@@ -12,15 +12,11 @@ $project = [xml](Get-Content -Raw -Encoding UTF8 $projectPath)
 $adapter = Get-Content -Raw -Encoding UTF8 $adapterPath
 $catalogScript = Get-Content -Raw -Encoding UTF8 $catalogScriptPath
 
-$officialCallShape = '(?s)emitter\.Bytes\(0x8B, 0xCE, 0x8D, 0x97\);.*?' +
-    'emitter\.Byte\(0x68\);\s*' +
-    'emitter\.UInt32\(checked\(data \+ EmptyWideStringOffset\)\);\s*' +
-    'emitter\.Bytes\(0x6A, 0x00, 0xB8\);.*?' +
-    'emitter\.Bytes\(0xFF, 0xD0, 0x83, 0xC4, 0x08\);'
-
-if ($transport -notmatch 'EmptyWideStringOffset = 0xD4' -or
-    $transport -notmatch $officialCallShape) {
-    throw 'QQ Music AddSongs must receive the non-null empty UTF-16 context and clean both stack arguments.'
+# The former assertion incorrectly required a bare UTF-16 argument. AddSongs
+# consumes a native CString reference. Executable-byte/ownership behavior is
+# covered by QQMusicNativeAbi.Tests; do not reinstate the corrupting buffer.
+if ($transport -match 'EmptyWideStringOffset') {
+    throw 'QQ Music AddSongs must not receive the former bare UTF-16 data buffer.'
 }
 
 $expectedProfiles = @(
@@ -127,7 +123,7 @@ foreach ($expectedProfile in $expectedProfiles) {
     }
 }
 
-if ([string]$project.Project.PropertyGroup.Version -ne '22.71.3') {
+if ([string]$project.Project.PropertyGroup.Version -ne '22.71.4') {
     throw 'QQ Music connector version must follow the tested QQ Music 22.71 branch.'
 }
 if ($adapter -notmatch '22\.22 / 22\.41 / 22\.51 / 22\.52 / 22\.60 / 22\.61 / 22\.71') {

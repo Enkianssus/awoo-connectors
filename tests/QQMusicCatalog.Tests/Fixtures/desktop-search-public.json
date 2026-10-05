@@ -1,0 +1,85 @@
+{
+  "code": 0,
+  "search": {
+    "code": 0,
+    "data": {
+      "code": 0,
+      "meta": {
+        "sum": 997,
+        "query": "晴天"
+      },
+      "body": {
+        "song": {
+          "list": [
+            {
+              "id": 97773,
+              "mid": "0039MnYb0qxYhV",
+              "type": 0,
+              "name": "晴天",
+              "singer": [
+                {
+                  "name": "周杰伦"
+                }
+              ],
+              "album": {
+                "name": "叶惠美",
+                "mid": "000MkMni19ClKG"
+              },
+              "interval": 269,
+              "action": {
+                "switch": 16880897
+              },
+              "pay": {
+                "pay_play": 1
+              }
+            },
+            {
+              "id": 548046023,
+              "mid": "0042rlGx2WHBrG",
+              "type": 0,
+              "name": "晴天",
+              "singer": [
+                {
+                  "name": "Lucky小爱"
+                }
+              ],
+              "album": {
+                "name": "晴天 (深情版)",
+                "mid": "004QUu810PIQis"
+              },
+              "interval": 278,
+              "action": {
+                "switch": 81683
+              },
+              "pay": {
+                "pay_play": 0
+              }
+            },
+            {
+              "id": 102065750,
+              "mid": "001Bbywq2gicae",
+              "type": 0,
+              "name": "搁浅",
+              "singer": [
+                {
+                  "name": "周杰伦"
+                }
+              ],
+              "album": {
+                "name": "七里香",
+                "mid": "003DFRzD192KKD"
+              },
+              "interval": 240,
+              "action": {
+                "switch": 16880897
+              },
+              "pay": {
+                "pay_play": 1
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

@@ -159,4 +159,36 @@ foreach (var missing in new[] { "\"getCatManagerHresult\":0,", "\"getSongInfoHre
     File.WriteAllText(strictPath, damaged);
     Reject(() => Type4Journal.Read(strictPath), "missing required journal field");
 }
+void Admit(string folder, Type4Request r) => Type4Journal.CheckAutomaticAdmission(
+    folder, r.ProcessId, r.StartTicks, r.Executable);
+var absentAdmissionDirectory = Path.Combine(root, "admission-absent");
+Admit(absentAdmissionDirectory, request);
+Check(!Directory.Exists(absentAdmissionDirectory), "automatic admission creates no directory or journal");
+var existingFiles = Directory.GetFiles(directory, "*", SearchOption.AllDirectories)
+    .ToDictionary(path => path, File.ReadAllBytes);
+Admit(directory, request);
+Check(existingFiles.Count == Directory.GetFiles(directory, "*", SearchOption.AllDirectories).Length
+    && existingFiles.All(pair => pair.Value.SequenceEqual(File.ReadAllBytes(pair.Key))),
+    "completed admission is read-only and does not reserve an operation");
+Reject(() => Admit(crashedDirectory, request), "automatic controls reject connector-reconnected pending journal");
+Reject(() => Admit(orphanDirectory, request), "automatic controls reject orphan archive");
+Reject(() => Admit(corruptDirectory, request), "automatic controls reject corrupt archive");
+for (var stage = 0; stage < 5; stage++)
+    Reject(() => Admit(Path.Combine(root, "stage-" + stage), request), "automatic controls reject incomplete stage " + stage);
+var admissionSafeDirectory = Path.Combine(root, "admission-safe");
+using (var safe = Type4Journal.Begin(admissionSafeDirectory, request))
+{
+    Reject(() => Admit(admissionSafeDirectory, request), "automatic controls reject busy native lease");
+    safe.Finish(new(request.OperationId, false, false, 0, true, true, false, 0, -1,
+        null, null, false, false, "preflight-rejected", null), new(-1, -1, true, false));
+}
+Admit(admissionSafeDirectory, request);
+Check(true, "proved unexposed rejection allows automatic controls");
+Admit(crashedDirectory, request with { StartTicks = request.StartTicks + 20 });
+Check(true, "new QQ process identity is not blocked by old pending state");
+var missingLeaseDirectory = Path.Combine(root, "missing-lease");
+Directory.CreateDirectory(missingLeaseDirectory);
+Type4Journal.AtomicWrite(Path.Combine(missingLeaseDirectory, request.ProcessId + "-" + request.StartTicks + ".json"),
+    new JournalRecord(1, "complete", request, Receipt(request), evidence, true, 1, 4096));
+Reject(() => Admit(missingLeaseDirectory, request), "automatic controls reject unleased history");
 Console.WriteLine(JsonSerializer.Serialize(new { passed = true, checks, processReads = 0, sends = 0, patchWrites = 0 }));

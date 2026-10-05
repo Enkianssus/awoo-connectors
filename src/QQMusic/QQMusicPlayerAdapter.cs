@@ -17,6 +17,7 @@ internal sealed class QQMusicPlayerAdapter :
     private readonly QQMusicEventMonitor _eventMonitor = new();
     private readonly SemaphoreSlim _operationGate = new(1, 1);
     private readonly SemaphoreSlim _nativeNextInsertGate = new(1, 1);
+    private readonly QQMusicNativeAutomation _nativeAutomation = new();
     private readonly object _trackSync = new();
     private readonly object _softwareNextSync = new();
     private readonly object _nativeNextSync = new();
@@ -43,6 +44,7 @@ internal sealed class QQMusicPlayerAdapter :
     private volatile string _softwareNextStatus = string.Empty;
     private long _observedTrackSequence;
     private int? _nativeSessionProcessId;
+    private QQMusicProcessEpoch? _nativeSessionEpoch;
     private bool _sessionObservedPlaying;
     private int _snapshotSuppressionDepth;
     private int _disposing;
@@ -287,6 +289,16 @@ internal sealed class QQMusicPlayerAdapter :
                     before);
             }
 
+            if (command is PlayerCommand.InsertNext or PlayerCommand.ArmNextGuard
+                or PlayerCommand.PlaySelected or PlayerCommand.InterruptSelected)
+            {
+                CheckAutomaticAdmission();
+                if (_nativeAutomation.IsBlocked)
+                    return new PlayerOperationResult(OperationOutcome.Rejected,
+                        QQMusicNativeAutomation.BlockedMessage, before,
+                        QQMusicNativeAutomation.BlockedFailureCode);
+            }
+
             if (track is not null)
             {
                 RememberTrack(track);
@@ -525,13 +537,8 @@ internal sealed class QQMusicPlayerAdapter :
             // its own operation for a manual user skip.
             var transactionToken = CancellationToken.None;
             CancelSoftwareNext("QQ 插队事务正在重排当前歌曲。等待最终目标后再更新守卫。");
-            var pause = await Task.Run(
-                () => SendSingleInstanceCommand(
-                    executable,
-                    "/playcontrol",
-                    "'pause'",
-                    helperWaitMilliseconds: 100),
-                transactionToken).ConfigureAwait(false);
+            var pause = await SendAutomaticCommandAsync(executable, "'pause'", transactionToken)
+                .ConfigureAwait(false);
             if (!pause.Sent)
             {
                 return new PlayerOperationResult(
@@ -540,20 +547,12 @@ internal sealed class QQMusicPlayerAdapter :
                     before);
             }
 
-            var previous = await Task.Run(
-                () => SendSingleInstanceCommand(
-                    executable,
-                    "/playcontrol",
-                    "'prev'",
-                    helperWaitMilliseconds: 100),
-                transactionToken).ConfigureAwait(false);
+            var previous = await SendAutomaticCommandAsync(executable, "'prev'", transactionToken)
+                .ConfigureAwait(false);
             if (!previous.Sent)
             {
-                _ = SendSingleInstanceCommand(
-                    executable,
-                    "/playcontrol",
-                    "'play'",
-                    helperWaitMilliseconds: 100);
+                _ = await SendAutomaticCommandAsync(executable, "'play'", transactionToken)
+                    .ConfigureAwait(false);
                 return new PlayerOperationResult(
                     OperationOutcome.Rejected,
                     "QQ 插队事务未能切到当前歌曲的上一首："
@@ -576,11 +575,8 @@ internal sealed class QQMusicPlayerAdapter :
             if (anchor.Current is null
                 || !HasTrackChanged(before.Current, anchor.Current))
             {
-                _ = SendSingleInstanceCommand(
-                    executable,
-                    "/playcontrol",
-                    "'play'",
-                    helperWaitMilliseconds: 100);
+                _ = await SendAutomaticCommandAsync(executable, "'play'", transactionToken)
+                    .ConfigureAwait(false);
                 return new PlayerOperationResult(
                     OperationOutcome.Rejected,
                     "已发送上一首，但 3 秒内没有确认新的插入锚点；"
@@ -649,67 +645,48 @@ internal sealed class QQMusicPlayerAdapter :
                 before);
         }
 
-        var pause = await Task.Run(
-            () => SendSingleInstanceCommand(
-                executable,
-                "/playcontrol",
-                "'pause'",
-                helperWaitMilliseconds: 100),
+        var foregroundBefore = GetForegroundWindow();
+        PlayerOperationResult? guard = null;
+        var preparation = await _nativeAutomation.PreparePlaybackAsync(
+            (argument, token) => SendAutomaticCommandAsync(executable, argument, token),
+            async token =>
+            {
+                CancelSoftwareNext("正在立即播放新的目标歌曲。");
+                guard = ArmSoftwareNext(before, track, token);
+                return await EnsureNativeNextInsertedAsync(track, payload, token)
+                    .ConfigureAwait(false);
+            },
+            () => CancelSoftwareNext("QQ 原生插入未确认完成，已停止自动守卫。"),
             cancellationToken).ConfigureAwait(false);
-        if (!pause.Sent)
+        if (!preparation.Pause.Sent)
         {
             return new PlayerOperationResult(
                 OperationOutcome.Rejected,
                 "QQ 立即点歌未能先暂停，已取消插入以避免漏音："
-                + pause.Message,
-                before);
+                + preparation.Pause.Message,
+                before,
+                _nativeAutomation.IsBlocked ? QQMusicNativeAutomation.BlockedFailureCode : null);
         }
 
-        await Task.Delay(20, cancellationToken).ConfigureAwait(false);
-
-        CancelSoftwareNext("正在立即播放新的目标歌曲。");
-        var guard = ArmSoftwareNext(before, track, cancellationToken);
-        var native = await EnsureNativeNextInsertedAsync(
-            track,
-            payload,
-            cancellationToken).ConfigureAwait(false);
+        var native = preparation.Native!;
         if (!native.Accepted)
         {
-            CancelSoftwareNext("QQ 原生插入被画像校验拒绝。");
-            _ = await Task.Run(
-                () => SendSingleInstanceCommand(
-                    executable,
-                    "/playcontrol",
-                    "'play'",
-                    helperWaitMilliseconds: 100),
-                cancellationToken).ConfigureAwait(false);
             return new PlayerOperationResult(
                 OperationOutcome.Rejected,
-                "QQ 原生插入下一首被拒绝；为保护播放器原有队列，"
+                (native.AutomationBlocked
+                    ? QQMusicNativeAutomation.BlockedMessage
+                    : "QQ 原生插入在派发前被拒绝；已尝试恢复原歌曲播放。")
+                + " 为保护播放器原有队列，"
                 + "没有回退到会重建队列的 /playbysongid。"
                 + $" 验证={native.Verification}；"
-                + (native.Error ?? "底层校验未通过。"),
+                + (native.Error ?? "原生插入未完成。"),
                 await ProbeAsync(cancellationToken).ConfigureAwait(false),
                 native.FailureCode);
         }
 
-        var foregroundBefore = GetForegroundWindow();
-        var next = await Task.Run(
-            () => SendSingleInstanceCommand(
-                executable,
-                "/playcontrol",
-                "'next'",
-                helperWaitMilliseconds: 100),
-            cancellationToken).ConfigureAwait(false);
+        var next = preparation.Next!;
         if (!next.Sent)
         {
-            _ = await Task.Run(
-                () => SendSingleInstanceCommand(
-                    executable,
-                    "/playcontrol",
-                    "'play'",
-                    helperWaitMilliseconds: 100),
-                cancellationToken).ConfigureAwait(false);
             return new PlayerOperationResult(
                 OperationOutcome.Accepted,
                 "目标已安全插入 QQ 下一首，但 next 命令发送失败；"
@@ -727,13 +704,12 @@ internal sealed class QQMusicPlayerAdapter :
             after = await ProbeAsync(cancellationToken).ConfigureAwait(false);
             if (TrackMatches(after.Current, track))
             {
-                _ = await Task.Run(
-                    () => SendSingleInstanceCommand(
-                        executable,
-                        "/playcontrol",
-                        "'play'",
-                        helperWaitMilliseconds: 100),
-                    cancellationToken).ConfigureAwait(false);
+                var play = await SendAutomaticCommandAsync(executable, "'play'", cancellationToken)
+                    .ConfigureAwait(false);
+                if (!play.Sent && _nativeAutomation.IsBlocked)
+                    return new PlayerOperationResult(OperationOutcome.Rejected,
+                        QQMusicNativeAutomation.BlockedMessage, after,
+                        QQMusicNativeAutomation.BlockedFailureCode);
                 return new PlayerOperationResult(
                     OperationOutcome.Verified,
                     $"已先暂停，{(native.InsertedNow ? "原生插入" : "复用已插入事务")}"
@@ -743,16 +719,15 @@ internal sealed class QQMusicPlayerAdapter :
             }
         }
 
-        _ = await Task.Run(
-            () => SendSingleInstanceCommand(
-                executable,
-                "/playcontrol",
-                "'play'",
-                helperWaitMilliseconds: 100),
-            cancellationToken).ConfigureAwait(false);
+        _ = await SendAutomaticCommandAsync(executable, "'play'", cancellationToken)
+            .ConfigureAwait(false);
+        if (_nativeAutomation.IsBlocked)
+            return new PlayerOperationResult(OperationOutcome.Rejected,
+                QQMusicNativeAutomation.BlockedMessage, after,
+                QQMusicNativeAutomation.BlockedFailureCode);
 
         return new PlayerOperationResult(
-            guard.IsSuccess
+            guard?.IsSuccess == true
                 ? OperationOutcome.Accepted
                 : OperationOutcome.Applied,
             "已先暂停、确认插入事务并发送 next，但 3 秒内未从标题确认目标；"
@@ -800,26 +775,22 @@ internal sealed class QQMusicPlayerAdapter :
         var accepted = result.Accepted;
         if (!accepted)
         {
-            CancelSoftwareNext("QQ 原生插入被画像校验拒绝。");
+            CancelSoftwareNext(result.AutomationBlocked
+                ? QQMusicNativeAutomation.BlockedMessage
+                : "QQ 原生插入在派发前被拒绝，已停止守卫。");
         }
         var after = await ProbeAsync(cancellationToken).ConfigureAwait(false);
         return new PlayerOperationResult(
-            accepted
-                ? result.Indeterminate
-                    ? OperationOutcome.Indeterminate
-                    : OperationOutcome.Accepted
-                : OperationOutcome.Rejected,
+            accepted ? OperationOutcome.Accepted : OperationOutcome.Rejected,
             accepted
                 ? result.InsertedNow
-                    ? result.Indeterminate
-                        ? $"QQ 原生 AddSongs 可能已完成，songID={payload.SongId}；"
-                          + "为防止重复歌曲，本次按不确定成功记账且禁止自动重插。"
-                        : $"QQ 已按精确版本画像提交原生下一首，songID={payload.SongId}；"
+                    ? $"QQ 已按精确版本画像提交原生下一首，songID={payload.SongId}；"
                           + "当前歌曲未变化；静音防漏音守卫同时待命。"
                     : $"QQ 下一首事务已包含 songID={payload.SongId}；"
                       + "本次没有重复插入，静音防漏音守卫继续待命。"
-                : $"QQ 原生下一首被拒绝：{result.Verification}；"
-                  + (result.Error ?? "底层校验未通过。")
+                : (result.AutomationBlocked ? QQMusicNativeAutomation.BlockedMessage : "QQ 原生下一首在派发前被拒绝。")
+                  + $" 验证={result.Verification}；"
+                  + (result.Error ?? "原生插入未完成。")
                   + " 未回退到会重建队列的播放命令。",
             after,
             result.FailureCode);
@@ -836,6 +807,12 @@ internal sealed class QQMusicPlayerAdapter :
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (_nativeAutomation.IsBlocked)
+        {
+            return new PlayerOperationResult(OperationOutcome.Rejected,
+                QQMusicNativeAutomation.BlockedMessage, before,
+                QQMusicNativeAutomation.BlockedFailureCode);
+        }
         if (Volatile.Read(ref _disposing) != 0)
         {
             return new PlayerOperationResult(
@@ -1420,13 +1397,7 @@ internal sealed class QQMusicPlayerAdapter :
                     before);
             }
 
-            var previous = await Task.Run(
-                    () => SendSingleInstanceCommand(
-                        executable,
-                        "/playcontrol",
-                        "'prev'",
-                        helperWaitMilliseconds: 100),
-                    cancellationToken)
+            var previous = await SendAutomaticCommandAsync(executable, "'prev'", cancellationToken)
                 .ConfigureAwait(false);
             if (!previous.Sent)
             {
@@ -1465,13 +1436,7 @@ internal sealed class QQMusicPlayerAdapter :
                     lateRecoveryTargetRecorded);
             }
 
-            var pause = await Task.Run(
-                    () => SendSingleInstanceCommand(
-                        executable,
-                        "/playcontrol",
-                        "'pause'",
-                        helperWaitMilliseconds: 100),
-                    cancellationToken)
+            var pause = await SendAutomaticCommandAsync(executable, "'pause'", cancellationToken)
                 .ConfigureAwait(false);
             if (!pause.Sent)
             {
@@ -1493,7 +1458,8 @@ internal sealed class QQMusicPlayerAdapter :
             {
                 return new WrongNextRecoveryResult(
                     false,
-                    "已回到原播放锚点并暂停，但原生目标插入被拒绝；"
+                    "已回到原播放锚点并暂停，但原生目标插入未确认完成；"
+                    + (native.AutomationBlocked ? QQMusicNativeAutomation.BlockedMessage : string.Empty)
                     + "为保护 QQ 原队列，没有使用 /playbysongid。"
                     + $" 验证={native.Verification}；已恢复原静音状态。",
                     await ProbeAsync(cancellationToken).ConfigureAwait(false));
@@ -1502,13 +1468,7 @@ internal sealed class QQMusicPlayerAdapter :
             // This is the only Next emitted by wrong-track recovery. There is
             // deliberately no retry timer: a failed or unverified takeover
             // must stop instead of walking down the user's existing queue.
-            var next = await Task.Run(
-                    () => SendSingleInstanceCommand(
-                        executable,
-                        "/playcontrol",
-                        "'next'",
-                        helperWaitMilliseconds: 100),
-                    cancellationToken)
+            var next = await SendAutomaticCommandAsync(executable, "'next'", cancellationToken)
                 .ConfigureAwait(false);
             if (!next.Sent)
             {
@@ -1527,13 +1487,7 @@ internal sealed class QQMusicPlayerAdapter :
             if (target is not null)
             {
                 ClearPendingNativeNextIfPlaying(track);
-                var play = await Task.Run(
-                        () => SendSingleInstanceCommand(
-                            executable,
-                            "/playcontrol",
-                            "'play'",
-                            helperWaitMilliseconds: 100),
-                        cancellationToken)
+                var play = await SendAutomaticCommandAsync(executable, "'play'", cancellationToken)
                     .ConfigureAwait(false);
                 if (!play.Sent)
                 {
@@ -1929,7 +1883,7 @@ internal sealed class QQMusicPlayerAdapter :
             ?? throw new InvalidDataException("QQ 搜索结果缺少原生 songID 数据。");
     }
 
-    private async Task<NativeNextEnsureResult> EnsureNativeNextInsertedAsync(
+    private async Task<QQMusicNativeEnsureResult> EnsureNativeNextInsertedAsync(
         PlayerTrack track,
         QqTrackPayload payload,
         CancellationToken cancellationToken)
@@ -1939,13 +1893,13 @@ internal sealed class QQMusicPlayerAdapter :
             .ConfigureAwait(false);
         try
         {
+            if (_nativeAutomation.IsBlocked) return _nativeAutomation.BlockedResult();
             var currentState = QQMusicNativeController.ReadPlaybackState();
             var anchor = EvaluatePlaybackAnchor(currentState);
             if (!anchor.IsReliable)
             {
-                return new NativeNextEnsureResult(
-                    false,
-                    false,
+                return new QQMusicNativeEnsureResult(
+                    QQMusicNativeInsertionState.SafeRejected,
                     false,
                     "QQPlaybackAnchorMissing",
                     anchor.Message,
@@ -1956,9 +1910,8 @@ internal sealed class QQMusicPlayerAdapter :
                 : FindProcessId(currentState.WindowHandle.Value);
             if (anchorProcessId is null)
             {
-                return new NativeNextEnsureResult(
-                    false,
-                    false,
+                return new QQMusicNativeEnsureResult(
+                    QQMusicNativeInsertionState.SafeRejected,
                     false,
                     "QQPlaybackAnchorMissing",
                     QQMusicPlaybackAnchorPolicy.MissingMessage,
@@ -1983,10 +1936,9 @@ internal sealed class QQMusicPlayerAdapter :
                                 payload.SongType));
                 if (existingPending is not null)
                 {
-                    return new NativeNextEnsureResult(
-                        true,
+                    return new QQMusicNativeEnsureResult(
+                        QQMusicNativeInsertionState.Accepted,
                         false,
-                        existingPending.VerificationIndeterminate,
                         "PendingNativeNextAlreadyInserted",
                         null,
                         null);
@@ -1999,6 +1951,7 @@ internal sealed class QQMusicPlayerAdapter :
             // is acquired, finish the mutation and ledger update before
             // releasing it; otherwise a timed-out caller can start a duplicate
             // insertion while the first native task is still running.
+            var operationEpoch = ReadProcessEpoch(anchorProcessId);
             var result = await QQMusicType4Insertion.InsertAsync(
                     new QQMusicSongReference(
                         payload.SongId,
@@ -2009,24 +1962,27 @@ internal sealed class QQMusicPlayerAdapter :
             // An uncertain Type4 operation is durably blocked for this QQ
             // process epoch. Do not turn it into accepted work or arm an
             // automatic next/recovery operation from an incomplete callback.
-            if (result.RequiresRestart)
-            {
-                return new NativeNextEnsureResult(
-                    false,
-                    result.PatchWriteAttempted,
-                    false,
-                    result.Verification,
-                    result.Error ?? "QQ 原生插入结果尚未确认，已停止后续自动操作；请先重启 QQ 再试。",
-                    result.FailureCode);
-            }
             var verified = IsNativeInsertAccepted(result, payload.SongId);
-            var sideEffectPossible = !verified
-                && result.NativeStage >= 4
-                && result.AddSongsHresult >= 0
-                && result.ResolvedSongId == payload.SongId;
             var sessionMatches = nativeSessionProcessId is not null
                 && result.TargetProcessId == nativeSessionProcessId.Value;
-            var accepted = (verified || sideEffectPossible) && sessionMatches;
+            // A failed result is safe for resume compensation only when no
+            // native dispatch or patch exposure occurred. This also covers
+            // older transports without a durable Type4 restart flag.
+            var state = QQMusicNativeAutomation.ClassifyOutcome(verified, sessionMatches,
+                result.RequiresRestart, result.CommandSent, result.PatchWriteAttempted,
+                result.RemoteMemoryRetained, result.OriginalCodeRestored, result.RemoteMemoryReleased);
+            if (state == QQMusicNativeInsertionState.Uncertain)
+            {
+                _nativeAutomation.Block(operationEpoch);
+                CancelSoftwareNext(QQMusicNativeAutomation.BlockedMessage);
+                return new QQMusicNativeEnsureResult(
+                    QQMusicNativeInsertionState.Uncertain,
+                    result.PatchWriteAttempted,
+                    result.Verification,
+                    result.Error ?? QQMusicNativeAutomation.BlockedMessage,
+                    QQMusicNativeAutomation.BlockedFailureCode);
+            }
+            var accepted = state == QQMusicNativeInsertionState.Accepted;
             if (accepted)
             {
                 lock (_nativeNextSync)
@@ -2042,20 +1998,16 @@ internal sealed class QQMusicPlayerAdapter :
                             payload,
                             DateTimeOffset.UtcNow,
                             insertedAtSequence,
-                            result.TargetProcessId,
-                            sideEffectPossible));
+                            result.TargetProcessId));
                 }
                 _eventMonitor.NotifySnapshotInvalidated();
             }
 
-            return new NativeNextEnsureResult(
-                accepted,
+            return new QQMusicNativeEnsureResult(
+                state,
                 true,
-                sideEffectPossible,
                 !sessionMatches
                     ? "QQMusicProcessChangedDuringNativeInsert"
-                    : sideEffectPossible
-                    ? "NativeAddSongsMayHaveCompleted;DuplicateRetrySuppressed"
                     : result.Verification,
                 result.Error,
                 result.FailureCode);
@@ -2240,14 +2192,17 @@ internal sealed class QQMusicPlayerAdapter :
 
     private void ObserveNativeSession(int? processId)
     {
+        var epoch = ReadProcessEpoch(processId);
+        _nativeAutomation.ObserveProcess(epoch);
         lock (_nativeNextSync)
         {
-            if (_nativeSessionProcessId == processId)
+            if (_nativeSessionProcessId == processId && _nativeSessionEpoch == epoch)
             {
                 return;
             }
 
             _nativeSessionProcessId = processId;
+            _nativeSessionEpoch = epoch;
             _pendingNativeNext.Clear();
             _lastObservedTrack = null;
             _observedTrackSequence = 0;
@@ -2256,6 +2211,63 @@ internal sealed class QQMusicPlayerAdapter :
         // A guard is scoped to one concrete QQ process/session. Never carry
         // even an Armed guard across a restart or transient process loss.
         CancelSoftwareNext(string.Empty);
+    }
+
+    private static QQMusicProcessEpoch? ReadProcessEpoch(int? processId)
+    {
+        if (processId is null) return null;
+        try
+        {
+            using var process = Process.GetProcessById(processId.Value);
+            return new(processId.Value, process.StartTime.ToUniversalTime().Ticks);
+        }
+        catch (Exception exception) when (exception is ArgumentException
+            or InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            // Failure to observe identity must never release an uncertain
+            // operation's latch. A visible window is not a fresh process.
+            return null;
+        }
+    }
+
+    private Task<QQMusicAutomaticCommandResult> SendAutomaticCommandAsync(
+        string executable, string argument, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        CheckAutomaticAdmission();
+        return _nativeAutomation.SendAsync(token => Task.Run(() =>
+        {
+            var result = SendSingleInstanceCommand(executable, "/playcontrol", argument,
+                helperWaitMilliseconds: 100);
+            return new QQMusicAutomaticCommandResult(result.Sent, result.Message);
+        }, token), cancellationToken);
+    }
+
+    private void CheckAutomaticAdmission()
+    {
+        if (_nativeAutomation.IsBlocked) return;
+        QQMusicProcessEpoch? epoch = null;
+        try
+        {
+            int? processId;
+            lock (_nativeNextSync) processId = _nativeSessionProcessId;
+            if (processId is null) throw new InvalidOperationException("QQ process identity unavailable.");
+            using var process = Process.GetProcessById(processId.Value);
+            epoch = new(processId.Value, process.StartTime.ToUniversalTime().Ticks);
+            var executable = process.MainModule?.FileName
+                ?? throw new InvalidOperationException("QQ executable identity unavailable.");
+            // Read-only: connector reconnects must observe an existing blocked
+            // receipt before their first pause/prev, not just before insertion.
+            // ExecuteAsync and guard recovery both hold _operationGate. Native
+            // Begin rechecks the same history under its exclusive mutation lease.
+            Type4Journal.CheckAutomaticAdmission(Type4Journal.DefaultDirectory,
+                epoch.Value.ProcessId, epoch.Value.StartTimeTicks, Path.GetFullPath(executable));
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            _nativeAutomation.Block(epoch);
+            CancelSoftwareNext(QQMusicNativeAutomation.BlockedMessage);
+        }
     }
 
     private static string? FindExecutablePath()
@@ -2483,16 +2495,7 @@ internal sealed class QQMusicPlayerAdapter :
         QqTrackPayload Payload,
         DateTimeOffset InsertedAt,
         long InsertedAtSequence,
-        int ProcessId,
-        bool VerificationIndeterminate);
-
-    private sealed record NativeNextEnsureResult(
-        bool Accepted,
-        bool InsertedNow,
-        bool Indeterminate,
-        string Verification,
-        string? Error,
-        string? FailureCode);
+        int ProcessId);
 
     private sealed record WrongNextRecoveryResult(
         bool Verified,

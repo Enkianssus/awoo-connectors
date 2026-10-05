@@ -23,6 +23,15 @@ older cores or connectors. NetEase `3.1.37.205354.7` advertises
 `snapshot-events-v1`; a new core subscribes with `subscribe` and receives exact
 snapshot event envelopes, while an older core continues to use `probe`.
 
+QQ Music connector 22.71.4 corrects the public search request context that
+returned empty lists for known songs. It also fixes native insertion's by-value
+CString ownership, uses an explicit completion marker instead of an undefined
+native return value, and stops automatic playback commands after an uncertain
+insertion. The corrected native string ABI is gated to the verified QQ 22.71
+binary; unreviewed player branches cannot execute the former bare-string call.
+Explicit player controls and restoration of the captured mute state remain
+available. Pending native journals stay blocked across connector reconnects.
+
 QQ Music connector 22.71.3 fixes search requests being abandoned when the
 primary catalog returns an HTTP error, times out, or returns an invalid response.
 It tries the existing alternate search endpoint once within a shared timeout

@@ -58,6 +58,75 @@ internal static class CatalogTests
             Check(handler.Requests[0].Method == "POST" && handler.Requests[0].Host == "u.y.qq.com", "primary endpoint and method");
         });
 
+        await CaseAsync("supported public Desktop request works while legacy is unavailable", async () =>
+        {
+            using var handler = new FakeHandler(async (request, token) =>
+            {
+                if (request.Method != HttpMethod.Post) return await Reply(SecretBody, 500);
+                using var payload = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token));
+                var root = payload.RootElement;
+                var comm = root.GetProperty("comm");
+                // The old ct=24/cv=0 combination returns code 0 but an empty
+                // list for known songs, so a healthy primary never rescued 500s.
+                if (comm.GetProperty("ct").GetInt32() != 11
+                    || comm.GetProperty("cv").GetInt32() != 1003006
+                    || comm.GetProperty("v").GetInt32() != 1003006)
+                    return await Reply(Primary());
+                var search = root.GetProperty("search");
+                Check(search.GetProperty("module").GetString() == "music.search.SearchCgiService"
+                    && search.GetProperty("method").GetString() == "DoSearchForQQMusicDesktop", "same public Desktop search method");
+                var parameter = search.GetProperty("param");
+                Check(parameter.GetProperty("query").GetString() == "晴天"
+                    && parameter.GetProperty("num_per_page").GetInt32() == 30
+                    && parameter.GetProperty("page_num").GetInt32() == 1
+                    && parameter.GetProperty("search_type").GetInt32() == 0, "query and song search bounds preserved");
+                Check(!request.Headers.Contains("Cookie") && request.Headers.Authorization is null,
+                    "public metadata request needs no account credentials");
+                return await Reply(Fixture("desktop-search-public.json"));
+            });
+            using var client = Client(handler);
+            var songs = await client.SearchAsync("  晴天  ", 99);
+            Check(handler.Count == 1 && songs.Count == 3, "working primary avoids unavailable legacy");
+            Check(songs[0].StableIdentity == "97773:0039MnYb0qxYhV:0"
+                && songs[0].Title == "晴天" && songs[0].Artist == "周杰伦"
+                && songs[0].Album == "叶惠美" && songs[0].AlbumMid == "000MkMni19ClKG"
+                && songs[0].DurationSeconds == 269 && songs[0].IsPlayable, "captured public metadata parsed without changing identity or permissions");
+        });
+
+        await CaseAsync("captured empty primary and empty legacy remain no matches", async () =>
+        {
+            using var handler = Sequence(_ => Reply(Fixture("desktop-search-empty-public.json")), _ => Reply(Legacy()));
+            using var client = Client(handler);
+            var songs = await client.SearchAsync("zzqvmxjptkqfwnz839472");
+            Check(songs.Count == 0 && handler.Count == 2, "valid empty responses do not become errors or unrelated songs");
+        });
+
+        await CaseAsync("raw primary uses the same supported request and lower count bound", async () =>
+        {
+            using var handler = new FakeHandler(async (request, token) =>
+            {
+                using var payload = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token));
+                Check(payload.RootElement.GetProperty("comm").GetProperty("ct").GetInt32() == 11,
+                    "raw helper does not retain the broken context");
+                Check(payload.RootElement.GetProperty("search").GetProperty("param").GetProperty("num_per_page").GetInt32() == 1,
+                    "lower result count bound remains one");
+                return await Reply(Fixture("desktop-search-public.json"));
+            });
+            using var client = Client(handler);
+            var body = await client.SearchRawAsync("晴天", -5);
+            Check(body == Fixture("desktop-search-public.json") && handler.Count == 1, "raw method preserves the service response");
+        });
+
+        await CaseAsync("primary keeps nonzero song type and unavailable action flag", async () =>
+        {
+            var body = Primary(12).Replace("\"type\":0", "\"type\":1,\"action\":{\"switch\":0}");
+            using var handler = Sequence(_ => Reply(body), _ => Reply(Legacy(13)));
+            using var client = Client(handler);
+            var songs = await client.SearchAsync(SecretQuery);
+            Check(songs.Single().SongType == 1 && !songs[0].IsPlayable, "catalog type and unavailable flag preserved");
+            Check(handler.Count == 1, "unavailable song does not trigger a permission-changing fallback");
+        });
+
         var primaryFailures = new Dictionary<string, string>
         {
             ["valid empty"] = Primary(),
@@ -66,6 +135,8 @@ internal static class CatalogTests
             ["invalid JSON"] = SecretBody,
             ["root business error"] = Primary(11).Replace("\"code\":0,\"search\"", "\"code\":5001,\"search\""),
             ["search business error"] = Primary(11).Replace("\"search\":{\"code\":0", "\"search\":{\"code\":1001"),
+            ["data business error"] = Primary(11).Replace("\"data\":{", "\"data\":{\"code\":10005,"),
+            ["data code wrong type"] = Primary(11).Replace("\"data\":{", "\"data\":{\"code\":\"bad\","),
             ["root array"] = "[]",
             ["root code wrong type"] = Primary(11).Replace("\"code\":0,\"search\"", "\"code\":\"bad\",\"search\""),
             ["search code wrong type"] = Primary(11).Replace("\"search\":{\"code\":0", "\"search\":{\"code\":null"),
@@ -276,6 +347,7 @@ internal static class CatalogTests
 
     private static QQMusicCatalogClient Client(HttpMessageHandler handler, int primaryMs = 500, int totalMs = 1000) =>
         new(handler, TimeSpan.FromMilliseconds(primaryMs), TimeSpan.FromMilliseconds(totalMs));
+    private static string Fixture(string file) => File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", file));
     private static TaskCompletionSource Signal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
     private static FakeHandler Sequence(params Func<CancellationToken, Task<HttpResponseMessage>>[] steps)
     {

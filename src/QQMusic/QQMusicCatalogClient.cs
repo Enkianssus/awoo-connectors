@@ -117,8 +117,12 @@ internal sealed class QQMusicCatalogClient : IDisposable
         {
             comm = new
             {
-                ct = 24,
-                cv = 0
+                // The public Desktop search service needs a supported client
+                // context. ct=24/cv=0 has returned successful but empty responses
+                // for known songs, unnecessarily routing them to the legacy API.
+                ct = 11,
+                cv = 1003006,
+                v = 1003006
             },
             search = new
             {
@@ -203,7 +207,11 @@ internal sealed class QQMusicCatalogClient : IDisposable
             var root = document.RootElement;
             ValidateApiCode(root);
             if (!legacy && root.ValueKind == JsonValueKind.Object && root.TryGetProperty("search", out var search))
+            {
                 ValidateApiCode(search);
+                if (search.ValueKind == JsonValueKind.Object && search.TryGetProperty("data", out var data))
+                    ValidateApiCode(data);
+            }
             var path = legacy ? new[] { "data", "song", "list" } : ["search", "data", "body", "song", "list"];
             if (!TryGetProperty(root, out var list, path) || list.ValueKind != JsonValueKind.Array)
                 return new(null, "invalid list shape");

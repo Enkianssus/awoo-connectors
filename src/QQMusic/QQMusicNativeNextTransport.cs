@@ -62,7 +62,6 @@ internal static class QQMusicNativeNextTransport
     private const int HiddenCategoryIdOffset = 0xC8;
     private const int HiddenCategoryCountOffset = 0xCC;
     private const int HiddenCategoryIndexOffset = 0xD0;
-    private const int EmptyWideStringOffset = 0xD4;
 
     private const uint ProcessVmOperation = 0x0008;
     private const uint ProcessVmRead = 0x0010;
@@ -242,7 +241,10 @@ internal static class QQMusicNativeNextTransport
                         : " " + failedChecks));
             }
 
-            if (sendSingleSong is not null) Type4Contract.VerifyProfile(profile);
+            // The CString argument has a consuming ABI. No unreviewed version
+            // may fall back to the former bare UTF-16 pointer, even on the
+            // legacy command transport. Validate before opening/writing QQ.
+            _ = RequireContextStringManagerRva(profile);
             validateIdentity?.Invoke();
 
             processHandle = OpenProcess(
@@ -408,7 +410,7 @@ internal static class QQMusicNativeNextTransport
             if (addSongsHresult < 0)
             {
                 throw new COMException(
-                    "AddSongs(mode=0) 没有接受下一首插入。",
+                    "AddSongs(mode=0) 调用未完成。",
                     addSongsHresult);
             }
         }
@@ -573,7 +575,22 @@ internal static class QQMusicNativeNextTransport
                 && resolvedSongId == (uint)song.SongId && originalCodeRestored && error is null));
     }
 
-    private static byte[] BuildUiTrampoline(
+    internal static int RequireContextStringManagerRva(QQMusicNativeNextProfile profile)
+    {
+        // Reviewed QQ 22.71 menu caller obtains a native CString manager at
+        // RVA 0x2B420, then acquires its nil string via vtable slot 0x0C.
+        // Historical profiles remain readable, but are not an ABI guarantee
+        // for this new native call. Their published connector builds are separate.
+        try { Type4Contract.VerifyProfile(profile); }
+        catch (InvalidOperationException)
+        {
+            throw new InvalidOperationException(
+                "当前 QQ 版本缺少经过验证的原生字符串调用约定，已拒绝插入。");
+        }
+        return 0x0002B420;
+    }
+
+    internal static byte[] BuildUiTrampoline(
         nint dataAddress,
         nint clientModuleBase,
         nint commonModuleBase,
@@ -596,6 +613,9 @@ internal static class QQMusicNativeNextTransport
         var addSongs = Address(
             clientModuleBase,
             profile.AddSongsRva);
+        var getStringManager = Address(
+            clientModuleBase,
+            RequireContextStringManagerRva(profile));
         var hiddenCategoryIdAddress = Address(
             clientModuleBase,
             profile.HiddenCategoryIdRva);
@@ -614,6 +634,9 @@ internal static class QQMusicNativeNextTransport
         emitter.UInt32(data);
         emitter.Bytes(0x33, 0xF6);
         emitter.MovDwordAtEdi(0x00, 1);
+        // This legacy-named field is our completion sentinel, NOT a native
+        // HRESULT: AddSongs has no defined EAX return contract.
+        emitter.MovDwordAtEdi(0x10, 0x80004005);
 
         // GetICatMgr(&data.catManager)
         emitter.Bytes(0x8D, 0x47, 0x08, 0x50, 0xB8);
@@ -682,20 +705,28 @@ internal static class QQMusicNativeNextTransport
         emitter.Bytes(0x89, 0x87);
         emitter.UInt32(VectorOffset + 8);
 
-        // AddSongs has two caller-cleaned stack arguments. QQ Music's own
-        // "play next" caller passes a non-null pointer to an empty UTF-16
-        // context string. A null pointer selects a different synchronous path
-        // that can block the UI thread, while omitting the argument makes the
-        // callee interpret unrelated stack data as a string. The remote data
-        // block is zero-initialized, so this address is a stable L"" value.
+        // AddSongs CONSUMES one CString reference, not a bare wchar_t*.
+        // Match QQ's menu caller: acquire an owned nil string from its native
+        // manager. Its 16-byte CStringData header and refcount belong to QQ;
+        // AddSongs releases that reference on return. A fake empty buffer here
+        // makes its destructor interpret our diagnostic fields as that header.
+        emitter.Byte(0xB8);
+        emitter.UInt32(getStringManager);
+        emitter.Bytes(0xFF, 0xD0, 0x85, 0xC0);
+        emitter.Jump32(0x0F, 0x84, "cleanup");
+        emitter.Bytes(0x8B, 0xC8, 0x8B, 0x01, 0xFF, 0x50, 0x0C);
+        emitter.Bytes(0x85, 0xC0);
+        emitter.Jump32(0x0F, 0x84, "cleanup");
+        emitter.Bytes(0x83, 0xC0, 0x10, 0x50);
+
+        // Getter calls may clobber ECX/EDX. Set both AddSongs register
+        // arguments only after acquiring its by-value context string.
         emitter.Bytes(0x8B, 0xCE, 0x8D, 0x97);
         emitter.UInt32(VectorOffset);
-        emitter.Byte(0x68);
-        emitter.UInt32(checked(data + EmptyWideStringOffset));
         emitter.Bytes(0x6A, 0x00, 0xB8);
         emitter.UInt32(addSongs);
         emitter.Bytes(0xFF, 0xD0, 0x83, 0xC4, 0x08);
-        emitter.Bytes(0x89, 0x47, 0x10);
+        emitter.MovDwordAtEdi(0x10, 0);
         emitter.MovDwordAtEdi(0x00, 4);
 
         emitter.Label("cleanup");

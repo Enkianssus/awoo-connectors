@@ -9,9 +9,6 @@
     <EnableWindowsTargeting>false</EnableWindowsTargeting>
   </PropertyGroup>
   <ItemGroup>
-    <None Update="Fixtures/*.json" CopyToOutputDirectory="PreserveNewest" />
-    <Compile Include="../../src/QQMusic/QQMusicCatalogClient.cs" Link="QQMusicCatalogClient.cs" />
-    <Compile Include="../../src/QQMusic/QQMusicAlbumArtwork.cs" Link="QQMusicAlbumArtwork.cs" />
-    <Compile Include="../../src/QQMusic/QQMusicWindowTitleParser.cs" Link="QQMusicWindowTitleParser.cs" />
+    <Compile Include="../../src/QQMusic/QQMusicNativeAutomation.cs" Link="QQMusicNativeAutomation.cs" />
   </ItemGroup>
 </Project>
