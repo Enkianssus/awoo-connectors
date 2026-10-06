@@ -7,7 +7,7 @@ using QQMusicControlPoc;
 
 return await CatalogTests.RunAsync();
 
-internal static class CatalogTests
+internal static partial class CatalogTests
 {
     private const string SecretQuery = "private-query-fixture-947281";
     private const string SecretBody = "private-response-body-fixture-718245";
@@ -339,6 +339,8 @@ internal static class CatalogTests
             Check(fast.Result.Single().SongId == 41 && slow.Result.Single().SongId == 42, "results stay bound to their requests");
             Check(handler.Count == 3 && handler.DisposedResponses == 3, "one primary success and one independent fallback");
         });
+
+        await RetryCasesAsync();
 
         Console.WriteLine(JsonSerializer.Serialize(new { passed = Failures.Count == 0, cases, checks,
             networkRequests = 0, failures = Failures }));

@@ -23,6 +23,13 @@ older cores or connectors. NetEase `3.1.37.205354.7` advertises
 `snapshot-events-v1`; a new core subscribes with `subscribe` and receives exact
 snapshot event envelopes, while an older core continues to use `probe`.
 
+QQ Music connector 22.71.5 retries a primary search once after a short delay
+when QQ returns business code 2001. Both primary attempts and their delay share
+the existing five-second primary budget; the complete search retains its
+twelve-second limit and one legacy fallback. Errors identify the response code
+layer and request attempts without logging queries or response bodies. This
+retry applies only to read-only search and does not repeat native insertion.
+
 QQ Music connector 22.71.4 corrects the public search request context that
 returned empty lists for known songs. It also fixes native insertion's by-value
 CString ownership, uses an explicit completion marker instead of an undefined

@@ -3,7 +3,7 @@
     <OutputType>Exe</OutputType>
     <AssemblyName>Awoo.Connector.QQMusic</AssemblyName>
     <RootNamespace>UnifiedPlayerControlPoc</RootNamespace>
-    <Version>22.71.4</Version>
+    <Version>22.71.5</Version>
     <InformationalVersion>$(Version)</InformationalVersion>
   </PropertyGroup>
 

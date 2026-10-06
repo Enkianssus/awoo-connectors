@@ -27,6 +27,7 @@ internal sealed class QQMusicCatalogClient : IDisposable
     private readonly HttpClient _httpClient;
     private readonly TimeSpan _primaryTimeout;
     private readonly TimeSpan _totalTimeout;
+    private readonly TimeSpan _retryDelay;
 
     public QQMusicCatalogClient()
         : this(new HttpClientHandler(), TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(12))
@@ -36,13 +37,18 @@ internal sealed class QQMusicCatalogClient : IDisposable
     internal QQMusicCatalogClient(
         HttpMessageHandler handler,
         TimeSpan primaryTimeout,
-        TimeSpan totalTimeout)
+        TimeSpan totalTimeout,
+        TimeSpan? retryDelay = null)
     {
         ArgumentNullException.ThrowIfNull(handler);
         ValidateTimeout(primaryTimeout, nameof(primaryTimeout));
         ValidateTimeout(totalTimeout, nameof(totalTimeout));
+        var delay = retryDelay ?? TimeSpan.FromMilliseconds(350);
+        if (delay < TimeSpan.Zero || delay.TotalMilliseconds > uint.MaxValue - 1)
+            throw new ArgumentOutOfRangeException(nameof(retryDelay));
         _primaryTimeout = primaryTimeout;
         _totalTimeout = totalTimeout;
+        _retryDelay = delay;
         // Keep HttpClientHandler's normal system/network defaults. Per-search
         // cancellation budgets include both HTTP headers and the response body.
         _httpClient = new HttpClient(handler, disposeHandler: true)
@@ -64,12 +70,34 @@ internal sealed class QQMusicCatalogClient : IDisposable
         cancellationToken.ThrowIfCancellationRequested();
         using var total = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         total.CancelAfter(_totalTimeout);
+        var primaryAttempts = new List<SearchAttempt>(capacity: 2);
+        CatalogFailure? skippedRetry = null;
         SearchAttempt primary;
         using (var primaryBudget = CancellationTokenSource.CreateLinkedTokenSource(total.Token))
         {
             primaryBudget.CancelAfter(_primaryTimeout);
             primary = await SearchEndpointAsync(query, count, legacy: false,
                 cancellationToken, primaryBudget.Token).ConfigureAwait(false);
+            primaryAttempts.Add(primary);
+            // Only the observed business response 2001 gets one read-only
+            // retry. Both requests and the delay share the original primary
+            // budget, preserving time for the legacy fallback.
+            if (primary.Failure is { Kind: CatalogFailureKind.ApiCode, BusinessCode: 2001 })
+            {
+                try
+                {
+                    await Task.Delay(_retryDelay, primaryBudget.Token).ConfigureAwait(false);
+                    primaryBudget.Token.ThrowIfCancellationRequested();
+                    primary = await SearchEndpointAsync(query, count, legacy: false,
+                        cancellationToken, primaryBudget.Token).ConfigureAwait(false);
+                    primaryAttempts.Add(primary);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+                catch (OperationCanceledException)
+                {
+                    skippedRetry = new(CatalogFailureKind.PrimaryBudgetExpired);
+                }
+            }
         }
         cancellationToken.ThrowIfCancellationRequested();
         if (primary.Songs is { Count: > 0 } primarySongs)
@@ -77,11 +105,16 @@ internal sealed class QQMusicCatalogClient : IDisposable
             var songs = BackfillMissingAlbumArtwork(primarySongs);
             cancellationToken.ThrowIfCancellationRequested();
             if (!total.IsCancellationRequested) return songs;
-            primary = new(null, "total timeout");
+            primaryAttempts[^1] = primary with
+            {
+                Songs = null,
+                Failure = new(CatalogFailureKind.TotalTimeout)
+            };
         }
         if (total.IsCancellationRequested)
         {
-            throw SearchFailure(primary.Failure, "total timeout (not attempted)");
+            throw SearchFailure(primaryAttempts, skippedRetry,
+                new(null, new(CatalogFailureKind.TotalTimeout), WasAttempted: false));
         }
         // Exactly one fallback. It receives the remaining total budget, not a
         // fresh full timeout, and a caller cancellation never reaches this send.
@@ -93,9 +126,9 @@ internal sealed class QQMusicCatalogClient : IDisposable
             var songs = BackfillMissingAlbumArtwork(legacy.Songs);
             cancellationToken.ThrowIfCancellationRequested();
             if (!total.IsCancellationRequested) return songs;
-            legacy = new(null, "total timeout");
+            legacy = legacy with { Songs = null, Failure = new(CatalogFailureKind.TotalTimeout) };
         }
-        throw SearchFailure(primary.Failure, legacy.Failure);
+        throw SearchFailure(primaryAttempts, skippedRetry, legacy);
     }
 
     public async Task<string> SearchRawAsync(
@@ -195,9 +228,11 @@ internal sealed class QQMusicCatalogClient : IDisposable
         CancellationToken callerCancellation, CancellationToken budget)
     {
         callerCancellation.ThrowIfCancellationRequested();
+        var attempted = false;
         try
         {
             budget.ThrowIfCancellationRequested();
+            attempted = true;
             var raw = await AwaitRequestAsync(legacy
                     ? SendLegacyRawAsync(query, count, budget)
                     : SendPrimaryRawAsync(query, count, budget), budget)
@@ -205,16 +240,16 @@ internal sealed class QQMusicCatalogClient : IDisposable
             budget.ThrowIfCancellationRequested();
             using var document = JsonDocument.Parse(raw);
             var root = document.RootElement;
-            ValidateApiCode(root);
+            ValidateApiCode(root, "root.code");
             if (!legacy && root.ValueKind == JsonValueKind.Object && root.TryGetProperty("search", out var search))
             {
-                ValidateApiCode(search);
+                ValidateApiCode(search, "search.code");
                 if (search.ValueKind == JsonValueKind.Object && search.TryGetProperty("data", out var data))
-                    ValidateApiCode(data);
+                    ValidateApiCode(data, "search.data.code");
             }
             var path = legacy ? new[] { "data", "song", "list" } : ["search", "data", "body", "song", "list"];
             if (!TryGetProperty(root, out var list, path) || list.ValueKind != JsonValueKind.Array)
-                return new(null, "invalid list shape");
+                return new(null, new(CatalogFailureKind.InvalidListShape));
             var songs = new List<QQMusicCatalogSong>();
             foreach (var item in list.EnumerateArray())
             {
@@ -223,16 +258,22 @@ internal sealed class QQMusicCatalogClient : IDisposable
             }
             budget.ThrowIfCancellationRequested();
             if (songs.Count != 0 || (legacy && list.GetArrayLength() == 0)) return new(songs, null);
-            return new(null, list.GetArrayLength() == 0 ? "empty-results" : "no valid songs");
+            return new(null, new(list.GetArrayLength() == 0
+                ? CatalogFailureKind.EmptyResults : CatalogFailureKind.NoValidSongs));
         }
         catch (OperationCanceledException) when (callerCancellation.IsCancellationRequested) { throw; }
-        catch (OperationCanceledException) { return new(null, "timeout"); }
+        catch (OperationCanceledException)
+        {
+            return new(null, new(CatalogFailureKind.Timeout), attempted);
+        }
         catch (HttpRequestException exception)
         {
-            return new(null, exception.StatusCode is { } status ? $"HTTP {(int)status}" : "HTTP transport failure");
+            return new(null, exception.StatusCode is { } status
+                ? new(CatalogFailureKind.HttpStatus, HttpStatus: (int)status)
+                : new(CatalogFailureKind.Transport));
         }
-        catch (JsonException) { return new(null, "invalid JSON"); }
-        catch (CatalogResponseException exception) { return new(null, exception.Message); }
+        catch (JsonException) { return new(null, new(CatalogFailureKind.InvalidJson)); }
+        catch (CatalogResponseException exception) { return new(null, exception.Failure); }
     }
 
     private static bool TryParseCatalogSong(JsonElement item, bool legacy, out QQMusicCatalogSong song)
@@ -266,12 +307,13 @@ internal sealed class QQMusicCatalogClient : IDisposable
         return true;
     }
 
-    private static void ValidateApiCode(JsonElement value)
+    private static void ValidateApiCode(JsonElement value, string path)
     {
         if (value.ValueKind != JsonValueKind.Object || !value.TryGetProperty("code", out var code)) return;
         if (code.ValueKind != JsonValueKind.Number || !code.TryGetInt64(out var number))
-            throw new CatalogResponseException("API code invalid");
-        if (number != 0) throw new CatalogResponseException($"API code {number}");
+            throw new CatalogResponseException(new(CatalogFailureKind.InvalidApiCode, Path: path));
+        if (number != 0)
+            throw new CatalogResponseException(new(CatalogFailureKind.ApiCode, number, path));
     }
 
     private static async Task<string> AwaitRequestAsync(Task<string> request, CancellationToken budget)
@@ -284,9 +326,27 @@ internal sealed class QQMusicCatalogClient : IDisposable
         return await request.WaitAsync(budget).ConfigureAwait(false);
     }
 
-    private static HttpRequestException SearchFailure(string? primary, string? legacy) =>
-        new($"QQ search failed: primary[musicu.fcg]: {primary ?? "no results"}; "
-            + $"legacy[client_search_cp]: {legacy ?? "no results"}.");
+    private static HttpRequestException SearchFailure(
+        IReadOnlyList<SearchAttempt> primary,
+        CatalogFailure? skippedRetry,
+        SearchAttempt legacy)
+    {
+        var primaryDetails = FormatAttempts(primary);
+        if (skippedRetry is not null)
+            primaryDetails += $"; retry not attempted: {skippedRetry.ToDiagnostic()}";
+        return new($"QQ search failed: primary[musicu.fcg]: {primaryDetails}; "
+            + $"legacy[client_search_cp]: {FormatAttempts([legacy])}.");
+    }
+
+    private static string FormatAttempts(IEnumerable<SearchAttempt> attempts)
+    {
+        var attemptNumber = 0;
+        return string.Join("; ", attempts.Select(attempt =>
+        {
+            var label = attempt.WasAttempted ? $"attempt {++attemptNumber}" : "not attempted";
+            return $"{label}: {attempt.Failure?.ToDiagnostic() ?? "no results"}";
+        }));
+    }
 
     private static void ValidateTimeout(TimeSpan timeout, string parameter)
     {
@@ -294,8 +354,53 @@ internal sealed class QQMusicCatalogClient : IDisposable
             throw new ArgumentOutOfRangeException(parameter);
     }
 
-    private sealed record SearchAttempt(IReadOnlyList<QQMusicCatalogSong>? Songs, string? Failure);
-    private sealed class CatalogResponseException(string message) : Exception(message);
+    private sealed record SearchAttempt(
+        IReadOnlyList<QQMusicCatalogSong>? Songs,
+        CatalogFailure? Failure,
+        bool WasAttempted = true);
+
+    private enum CatalogFailureKind
+    {
+        EmptyResults,
+        NoValidSongs,
+        InvalidListShape,
+        Timeout,
+        TotalTimeout,
+        PrimaryBudgetExpired,
+        HttpStatus,
+        Transport,
+        InvalidJson,
+        InvalidApiCode,
+        ApiCode
+    }
+
+    private sealed record CatalogFailure(
+        CatalogFailureKind Kind,
+        long? BusinessCode = null,
+        string? Path = null,
+        int? HttpStatus = null)
+    {
+        public string ToDiagnostic() => Kind switch
+        {
+            CatalogFailureKind.EmptyResults => "empty-results",
+            CatalogFailureKind.NoValidSongs => "no valid songs",
+            CatalogFailureKind.InvalidListShape => "invalid list shape",
+            CatalogFailureKind.Timeout => "timeout",
+            CatalogFailureKind.TotalTimeout => "total timeout",
+            CatalogFailureKind.PrimaryBudgetExpired => "primary budget expired",
+            CatalogFailureKind.HttpStatus => $"HTTP {HttpStatus}",
+            CatalogFailureKind.Transport => "HTTP transport failure",
+            CatalogFailureKind.InvalidJson => "invalid JSON",
+            CatalogFailureKind.InvalidApiCode => $"API code invalid at {Path}",
+            CatalogFailureKind.ApiCode => $"API code {BusinessCode} at {Path}",
+            _ => "unknown failure"
+        };
+    }
+
+    private sealed class CatalogResponseException(CatalogFailure failure) : Exception
+    {
+        public CatalogFailure Failure { get; } = failure;
+    }
 
     public void Dispose()
     {
