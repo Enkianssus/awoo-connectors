@@ -23,6 +23,17 @@ older cores or connectors. NetEase `3.1.37.205354.7` advertises
 `snapshot-events-v1`; a new core subscribes with `subscribe` and receives exact
 snapshot event envelopes, while an older core continues to use `probe`.
 
+QQ Music connector 22.76.1 supports the reviewed QQ 22.76 build and retains
+QQ 22.71 support using schema 2 compatibility profiles. Exact DLL fingerprints,
+call addresses and the CString manager getter are data; the connector implements
+only named, reviewed native calling conventions. A signed profile can describe
+another build of an existing convention without recompiling the connector.
+Unknown conventions still require a connector update. Runtime capabilities now
+reflect the actual executable profile, and unsupported versions stop automatic
+queue operations while retaining search and manual playback controls. This
+snapshot capability contract requires Awoo MusicBot 1.2.5. The profile catalog
+keeps its legacy entry and adds a separate schema 2 entry for updated clients.
+
 QQ Music connector 22.71.5 retries a primary search once after a short delay
 when QQ returns business code 2001. Both primary attempts and their delay share
 the existing five-second primary budget; the complete search retains its

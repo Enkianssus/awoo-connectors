@@ -59,4 +59,5 @@ foreach (var invalidPid in new[] { 0, -1, int.MinValue })
     catch (ArgumentOutOfRangeException) { rejected = true; }
     Check(rejected, "invalid expected PID rejected");
 }
+AnalyzerModuleChecks.Run(Check);
 Console.WriteLine($"PASS {checks} native performance equivalence checks; no QQ process reads, writes, transport or UI calls.");

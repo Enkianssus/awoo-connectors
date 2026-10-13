@@ -19,7 +19,46 @@ internal sealed record QQMusicNativeNextProfile(
     int GetListHelperRva,
     int GetCategoryCountRva,
     int SongItemSize,
-    string Evidence);
+    string Evidence,
+    int SchemaVersion = 1,
+    string ApiSha256 = "",
+    string AbiContract = "",
+    string TransportContract = "",
+    int StringManagerGetterRva = 0);
+
+// Profiles contain data for these fixed, reviewed templates only. They cannot
+// supply instructions, vtable slots, argument layouts or ownership rules.
+internal static class QQMusicNativeProfileContract
+{
+    internal const string CStringAbi = "qqmusic-addsongs-cstring-v1";
+    internal const string Type4Transport = "type4-songid-v1";
+    internal static bool IsSha256(string? value) => value is { Length: 64 } && value.All(Uri.IsHexDigit);
+    internal static bool IsRva(int value) => value is >= 0x1000 and <= 0x0FFFFFFF;
+
+    internal static void Verify(QQMusicNativeNextProfile p)
+    {
+        if (p.SchemaVersion != 2 || p.AbiContract != CStringAbi || p.TransportContract != Type4Transport
+            || string.IsNullOrWhiteSpace(p.FileVersion) || !IsSha256(p.ClientSha256)
+            || !IsSha256(p.CommonSha256) || !IsSha256(p.ApiSha256)
+            || p.SongItemSize != 0xA0 || p.ExpectedPlayDispatchBytes is not { Length: 5 }
+            || p.ExpectedPlayDispatchBytes[0] != 0xE8
+            || !Rvas(p).All(IsRva))
+            throw new InvalidOperationException("QQ 兼容画像缺少受支持的 schema 2 原生调用约定或精确文件指纹。");
+        var callTarget = (long)p.SingleSongPlayDispatchRva + 5 + BitConverter.ToInt32(p.ExpectedPlayDispatchBytes, 1);
+        if (callTarget < 0x1000 || callTarget > 0x0FFFFFFF)
+            throw new InvalidOperationException("QQ 兼容画像的分发目标超出允许的模块范围。");
+    }
+
+    internal static IEnumerable<int> Rvas(QQMusicNativeNextProfile p) =>
+        [p.SingleSongPlayDispatchRva, p.GetCatManagerRva, p.GetQqUinExRva,
+            p.SongItemConstructorRva, p.SongItemDestructorRva, p.AddSongsRva,
+            p.HiddenCategoryIdRva, p.GetListRootRva, p.GetListHelperRva,
+            p.GetCategoryCountRva, p.StringManagerGetterRva];
+
+    internal static bool SameExecutionContract(QQMusicNativeNextProfile a, QQMusicNativeNextProfile b) =>
+        a.ExpectedPlayDispatchBytes.SequenceEqual(b.ExpectedPlayDispatchBytes)
+        && a with { ExpectedPlayDispatchBytes = b.ExpectedPlayDispatchBytes, Evidence = b.Evidence } == b;
+}
 
 internal static class QQMusicNativeNextProfiles
 {
@@ -61,11 +100,30 @@ internal static class QQMusicNativeNextProfiles
             "2026-08-01 校准 cmd_count=1 单曲分支并现场动态验证")
     ];
 
-    private static readonly Lazy<IReadOnlyList<QQMusicNativeNextProfile>>
-        LoadedProfiles = new(LoadProfiles);
+    private static readonly object ProfileLock = new();
+    private static IReadOnlyList<QQMusicNativeNextProfile>? loadedProfiles;
+    private static long revision;
 
     public static IReadOnlyList<QQMusicNativeNextProfile> All =>
-        LoadedProfiles.Value;
+        Volatile.Read(ref loadedProfiles) ?? Reload();
+    public static long Revision { get { _ = All; return Interlocked.Read(ref revision); } }
+
+    // Reconnect/reprobe after the core installs a signature-verified pack can
+    // refresh the snapshot without restarting this binary. In-flight insertions
+    // keep their selected immutable profile and reject a changed contract.
+    public static IReadOnlyList<QQMusicNativeNextProfile> Reload()
+    {
+        lock (ProfileLock)
+        {
+            var snapshot = LoadProfiles();
+            var previous = loadedProfiles;
+            if (previous is null || previous.Count != snapshot.Count
+                || previous.Any(old => !snapshot.Any(next => QQMusicNativeProfileContract.SameExecutionContract(old, next))))
+                Interlocked.Increment(ref revision);
+            Volatile.Write(ref loadedProfiles, snapshot);
+            return snapshot;
+        }
+    }
 
     public static QQMusicNativeNextProfile? Find(
         string fileVersion,
@@ -81,12 +139,18 @@ internal static class QQMusicNativeNextProfiles
                 profile.ClientSha256,
                 clientSha256,
                 StringComparison.OrdinalIgnoreCase)
-            && (string.IsNullOrWhiteSpace(profile.CommonSha256)
-                || string.Equals(
+            && string.Equals(
                     profile.CommonSha256,
                     commonSha256,
-                    StringComparison.OrdinalIgnoreCase)));
+                    StringComparison.OrdinalIgnoreCase));
     }
+
+    public static QQMusicNativeNextProfile? Find(string fileVersion, string clientSha256,
+        string commonSha256, string apiSha256) => All.FirstOrDefault(profile =>
+            profile.SchemaVersion == 2 && profile.FileVersion == fileVersion
+            && string.Equals(profile.ClientSha256, clientSha256, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(profile.CommonSha256, commonSha256, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(profile.ApiSha256, apiSha256, StringComparison.OrdinalIgnoreCase));
 
     private static IReadOnlyList<QQMusicNativeNextProfile> LoadProfiles()
     {
@@ -107,20 +171,29 @@ internal static class QQMusicNativeNextProfiles
             foreach (var path in Directory.EnumerateFiles(
                          directory,
                          "*.json",
-                         SearchOption.TopDirectoryOnly))
+                         SearchOption.TopDirectoryOnly).Order(StringComparer.OrdinalIgnoreCase))
             {
                 try
                 {
-                    var document = JsonSerializer.Deserialize<
-                        QQMusicNativeNextProfileDocument>(
-                        File.ReadAllText(path),
-                        new JsonSerializerOptions
-                        {
-                            PropertyNameCaseInsensitive = true
-                        });
+                    var json = File.ReadAllText(path);
+                    using var parsed = JsonDocument.Parse(json);
+                    if (parsed.RootElement.ValueKind != JsonValueKind.Object) continue;
+                    var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    if (parsed.RootElement.EnumerateObject().Any(property => !names.Add(property.Name))) continue;
+                    var document = JsonSerializer.Deserialize<QQMusicNativeNextProfileDocument>(json,
+                        new JsonSerializerOptions { PropertyNameCaseInsensitive = true,
+                            UnmappedMemberHandling = System.Text.Json.Serialization.JsonUnmappedMemberHandling.Disallow });
                     var profile = document?.ToProfile();
                     if (profile is not null)
                     {
+                        var sameIdentity = profiles.Values.Where(existing =>
+                            BuildBaseKey(existing).Equals(BuildBaseKey(profile), StringComparison.OrdinalIgnoreCase)).ToArray();
+                        // A frozen schema 1 pack must never downgrade a bundled
+                        // or previously selected schema 2 execution contract.
+                        if (profile.SchemaVersion == 1 && sameIdentity.Any(existing => existing.SchemaVersion == 2)) continue;
+                        if (profile.SchemaVersion == 2)
+                            foreach (var old in sameIdentity.Where(existing => existing.SchemaVersion == 1))
+                                profiles.Remove(BuildKey(old));
                         profiles[BuildKey(profile)] = profile;
                     }
                 }
@@ -149,8 +222,10 @@ internal static class QQMusicNativeNextProfiles
         }
     }
 
-    private static string BuildKey(QQMusicNativeNextProfile profile) =>
+    private static string BuildBaseKey(QQMusicNativeNextProfile profile) =>
         $"{profile.FileVersion}|{profile.ClientSha256}|{profile.CommonSha256}";
+    private static string BuildKey(QQMusicNativeNextProfile profile) =>
+        $"{BuildBaseKey(profile)}|{profile.ApiSha256}";
 
     private sealed record QQMusicNativeNextProfileDocument(
         int SchemaVersion,
@@ -169,14 +244,18 @@ internal static class QQMusicNativeNextProfiles
         string GetListHelperRva,
         string GetCategoryCountRva,
         string SongItemSize,
-        string Evidence)
+        string Evidence,
+        string ApiSha256 = "",
+        string AbiContract = "",
+        string TransportContract = "",
+        string StringManagerGetterRva = "0")
     {
         public QQMusicNativeNextProfile? ToProfile()
         {
-            if (SchemaVersion != 1
+            if (SchemaVersion is not (1 or 2)
                 || string.IsNullOrWhiteSpace(FileVersion)
-                || !IsSha256(ClientSha256)
-                || !IsSha256(CommonSha256))
+                || !QQMusicNativeProfileContract.IsSha256(ClientSha256)
+                || !QQMusicNativeProfileContract.IsSha256(CommonSha256))
             {
                 return null;
             }
@@ -188,12 +267,12 @@ internal static class QQMusicNativeNextProfiles
                     NumberStyles.HexNumber,
                     CultureInfo.InvariantCulture))
                 .ToArray();
-            if (expected.Length != 5)
+            if (expected.Length != 5 || expected[0] != 0xE8)
             {
                 return null;
             }
 
-            return new QQMusicNativeNextProfile(
+            var profile = new QQMusicNativeNextProfile(
                 FileVersion.Trim(),
                 ClientSha256.Trim().ToUpperInvariant(),
                 CommonSha256.Trim().ToUpperInvariant(),
@@ -209,7 +288,18 @@ internal static class QQMusicNativeNextProfiles
                 ParseNumber(GetListHelperRva),
                 ParseNumber(GetCategoryCountRva),
                 ParseNumber(SongItemSize),
-                Evidence ?? string.Empty);
+                Evidence ?? string.Empty,
+                SchemaVersion,
+                ApiSha256?.Trim().ToUpperInvariant() ?? string.Empty,
+                AbiContract ?? string.Empty,
+                TransportContract ?? string.Empty,
+                ParseNumber(StringManagerGetterRva));
+            if (profile.SongItemSize != 0xA0
+                || !QQMusicNativeProfileContract.Rvas(profile).Take(10).All(QQMusicNativeProfileContract.IsRva)) return null;
+            if (SchemaVersion == 2) QQMusicNativeProfileContract.Verify(profile);
+            else if (!string.IsNullOrEmpty(profile.ApiSha256) || !string.IsNullOrEmpty(profile.AbiContract)
+                || !string.IsNullOrEmpty(profile.TransportContract) || profile.StringManagerGetterRva != 0) return null;
+            return profile;
         }
 
         private static int ParseNumber(string value)
@@ -223,8 +313,5 @@ internal static class QQMusicNativeNextProfiles
                 : int.Parse(trimmed, CultureInfo.InvariantCulture);
         }
 
-        private static bool IsSha256(string value) =>
-            value.Length == 64
-            && value.All(Uri.IsHexDigit);
     }
 }

@@ -7,24 +7,26 @@ using System.Text;
 
 namespace QQMusicControlPoc;
 
-// Single-use sender for the validated 22.71 native insertion scope.
+// Single-use sender for the profile-validated Type4 insertion scope.
 // The return is a delivery receipt, never an insertion acknowledgement.
 internal sealed class Type4Transport
 {
     internal sealed record DeliveryReceipt(bool SendAttempted, bool TransportReturnedSuccess,
         int Win32Error, bool NativeOutcomeKnown = false);
-    private const string ApiHash = "10ED93D19DDD4934111A7D789790DFA6953450F6F3DBD51E2CCF80BEB6B8F027";
     private const string WindowClass = "csQQMusicComApiWnd2017";
     private const string WindowTitle = "QQMusic_COM_WND_B2DA2B76_8235_4739_8298_89D994522476";
     private readonly string expectedExecutable;
+    private readonly string expectedApiHash;
     private readonly Action beforeAttempt;
     private int attempts;
 
-    public Type4Transport(string executablePath, Action beforeAttempt)
+    public Type4Transport(string executablePath, QQMusicNativeNextProfile profile, Action beforeAttempt)
     {
         if (!Path.IsPathFullyQualified(executablePath))
             throw new ArgumentException("Absolute verified QQ executable path required.");
+        Type4Contract.VerifyProfile(profile);
         expectedExecutable = Path.GetFullPath(executablePath);
+        expectedApiHash = profile.ApiSha256;
         this.beforeAttempt = beforeAttempt;
     }
 
@@ -62,7 +64,7 @@ internal sealed class Type4Transport
         var apiPath = Path.Combine(Path.GetDirectoryName(expectedExecutable)!, "QQMusicApi.dll");
         // Hold the reviewed disk file against replacement for this bounded send.
         using var apiFile = new FileStream(apiPath, FileMode.Open, FileAccess.Read, FileShare.Read);
-        if (Convert.ToHexString(SHA256.HashData(apiFile)) != ApiHash)
+        if (!Convert.ToHexString(SHA256.HashData(apiFile)).Equals(expectedApiHash, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("Unknown QQMusicApi wire implementation.");
         var modules = process.Modules.Cast<ProcessModule>()
             .Where(m => string.Equals(m.ModuleName, "QQMusicApi.dll", StringComparison.OrdinalIgnoreCase)).ToArray();

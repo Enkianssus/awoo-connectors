@@ -78,18 +78,19 @@ internal static class QQMusicNativeNextTransport
 
     public static Task<QQMusicNativeNextResult> InsertAsync(
         QQMusicSongReference song, int anchorProcessId, TimeSpan? responseWindow = null) =>
-        InsertCoreAsync(song, anchorProcessId, null, null, null, responseWindow);
+        QQMusicType4Insertion.InsertAsync(song, anchorProcessId, responseWindow);
 
     internal static Task<QQMusicNativeNextResult> InsertType4Async(
-        QQMusicSongReference song, int anchorProcessId,
+        QQMusicSongReference song, int anchorProcessId, QQMusicNativeNextProfile selectedProfile,
         Func<int, QQMusicSongReference, Type4Transport.DeliveryReceipt> sender,
         Action? validateIdentity, Action<SafeProcessHandle>? validateOpenedHandle,
         TimeSpan? responseWindow = null) =>
-        InsertCoreAsync(song, anchorProcessId, sender, validateIdentity, validateOpenedHandle, responseWindow);
+        InsertCoreAsync(song, anchorProcessId, selectedProfile, sender, validateIdentity, validateOpenedHandle, responseWindow);
 
     private static async Task<QQMusicNativeNextResult> InsertCoreAsync(
         QQMusicSongReference song,
         int anchorProcessId,
+        QQMusicNativeNextProfile selectedProfile,
         Func<int, QQMusicSongReference, Type4Transport.DeliveryReceipt>? sendSingleSong,
         Action? validateIdentity,
         Action<SafeProcessHandle>? validateOpenedHandle,
@@ -109,6 +110,7 @@ internal static class QQMusicNativeNextTransport
                     () => Insert(
                         song,
                         anchorProcessId,
+                        selectedProfile,
                         sendSingleSong,
                         validateIdentity,
                         validateOpenedHandle,
@@ -124,6 +126,7 @@ internal static class QQMusicNativeNextTransport
     private static QQMusicNativeNextResult Insert(
         QQMusicSongReference song,
         int anchorProcessId,
+        QQMusicNativeNextProfile selectedProfile,
         Func<int, QQMusicSongReference, Type4Transport.DeliveryReceipt>? sendSingleSong,
         Action? validateIdentity,
         Action<SafeProcessHandle>? validateOpenedHandle,
@@ -221,7 +224,8 @@ internal static class QQMusicNativeNextTransport
                 target.ClientModulePath,
                 target.CommonModulePath,
                 target.ExecutablePath,
-                target.Process.Id);
+                target.Process.Id,
+                includeCandidates: false);
             fileVersion = analysis.FileVersion;
             sha256 = analysis.ClientSha256;
             profile = analysis.Profile;
@@ -245,6 +249,8 @@ internal static class QQMusicNativeNextTransport
             // may fall back to the former bare UTF-16 pointer, even on the
             // legacy command transport. Validate before opening/writing QQ.
             _ = RequireContextStringManagerRva(profile);
+            if (!QQMusicNativeProfileContract.SameExecutionContract(selectedProfile, profile))
+                throw new InvalidOperationException("QQ 兼容画像在插入准备期间发生变化，已拒绝写入。");
             validateIdentity?.Invoke();
 
             processHandle = OpenProcess(
@@ -577,8 +583,8 @@ internal static class QQMusicNativeNextTransport
 
     internal static int RequireContextStringManagerRva(QQMusicNativeNextProfile profile)
     {
-        // Reviewed QQ 22.71 menu caller obtains a native CString manager at
-        // RVA 0x2B420, then acquires its nil string via vtable slot 0x0C.
+        // The supported ABI obtains a native CString manager from the profile's
+        // exact getter, then acquires its nil string via fixed vtable slot 0x0C.
         // Historical profiles remain readable, but are not an ABI guarantee
         // for this new native call. Their published connector builds are separate.
         try { Type4Contract.VerifyProfile(profile); }
@@ -587,7 +593,7 @@ internal static class QQMusicNativeNextTransport
             throw new InvalidOperationException(
                 "当前 QQ 版本缺少经过验证的原生字符串调用约定，已拒绝插入。");
         }
-        return 0x0002B420;
+        return profile.StringManagerGetterRva;
     }
 
     internal static byte[] BuildUiTrampoline(

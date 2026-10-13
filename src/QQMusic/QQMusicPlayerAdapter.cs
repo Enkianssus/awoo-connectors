@@ -18,6 +18,10 @@ internal sealed class QQMusicPlayerAdapter :
     private readonly SemaphoreSlim _operationGate = new(1, 1);
     private readonly SemaphoreSlim _nativeNextInsertGate = new(1, 1);
     private readonly QQMusicNativeAutomation _nativeAutomation = new();
+    private readonly QQMusicNativeSupportCache _nativeSupportCache = new();
+    private readonly object _nativeSupportSync = new();
+    private QQMusicNativeSupportState _nativeSupport = QQMusicNativeSupportState.Disconnected;
+    private long _lastProfileReloadTimestamp;
     private readonly object _trackSync = new();
     private readonly object _softwareNextSync = new();
     private readonly object _nativeNextSync = new();
@@ -57,20 +61,15 @@ internal sealed class QQMusicPlayerAdapter :
     public string DisplayName => "QQ 音乐";
 
     public string TestedVersion =>
-        "22.22 / 22.41 / 22.51 / 22.52 / 22.60 / 22.61 / 22.71";
+        string.Join(" / ", QQMusicNativeNextProfiles.All
+            .Where(profile => profile.SchemaVersion == 2)
+            .Select(profile => profile.FileVersion)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(version => version, StringComparer.Ordinal));
 
     public bool AllowUnsafeNativeNext { get; set; }
 
-    public PlayerCapabilities Capabilities { get; } = new(
-        Search: true,
-        PlaySelected: true,
-        Previous: true,
-        Pause: true,
-        Resume: true,
-        Toggle: false,
-        Next: true,
-        InsertNext: true,
-        InsertNextLevel: "精确版本画像原生插队；静音+暂停守卫防漏音");
+    public PlayerCapabilities Capabilities => RefreshCurrentNativeSupport().Capabilities;
 
     public Task<PlayerSnapshot> ProbeAsync(
         CancellationToken cancellationToken)
@@ -81,6 +80,7 @@ internal sealed class QQMusicPlayerAdapter :
             if (!state.IsRunning)
             {
                 ObserveNativeSession(null);
+                ApplyNativeSupport(QQMusicNativeSupportState.Disconnected);
                 return new PlayerSnapshot(
                     false,
                     DisplayName,
@@ -89,7 +89,8 @@ internal sealed class QQMusicPlayerAdapter :
                     "未连接：没有发现可见 QQ 音乐窗口",
                     null,
                     DateTimeOffset.Now,
-                    PlaybackAnchorReady: false);
+                    PlaybackAnchorReady: false,
+                    Capabilities: QQMusicNativeSupportState.Disconnected.Capabilities);
             }
 
             StartCompatibilityReportOnce();
@@ -101,6 +102,7 @@ internal sealed class QQMusicPlayerAdapter :
             var version = processId is null
                 ? string.Empty
                 : GetCachedVersion(processId.Value);
+            var nativeSupport = RefreshNativeSupport(processId, version);
             var current = ResolveKnownTrack(
                 state.Title,
                 state.Artist)
@@ -138,6 +140,7 @@ internal sealed class QQMusicPlayerAdapter :
                 version,
                 "QQMusic.exe 单实例控制可用；实时状态="
                 + _eventMonitor.SourceStatus
+                + "；" + nativeSupport.Message
                 + (string.IsNullOrWhiteSpace(_softwareNextStatus)
                     ? string.Empty
                     : $"；{_softwareNextStatus}"),
@@ -148,7 +151,9 @@ internal sealed class QQMusicPlayerAdapter :
                 guardedNext.Target is null ? "unknown" : "track",
                 PlaybackAnchorReady: anchor.IsReliable,
                 NextGuardState: guardedNext.State,
-                NextGuardId: guardedNext.GuardId);
+                NextGuardId: guardedNext.GuardId,
+                Capabilities: nativeSupport.Capabilities,
+                CompatibilityFailureCode: nativeSupport.FailureCode);
         }, cancellationToken);
     }
 
@@ -289,9 +294,11 @@ internal sealed class QQMusicPlayerAdapter :
                     before);
             }
 
-            if (command is PlayerCommand.InsertNext or PlayerCommand.ArmNextGuard
-                or PlayerCommand.PlaySelected or PlayerCommand.InterruptSelected)
+            if (QQMusicNativeSupportState.RequiresNativeSupport(command))
             {
+                var compatibilityFailure = _nativeSupport.RejectIfUnavailable(
+                    command, before, StopUnsupportedGuard);
+                if (compatibilityFailure is not null) return compatibilityFailure;
                 CheckAutomaticAdmission();
                 if (_nativeAutomation.IsBlocked)
                     return new PlayerOperationResult(OperationOutcome.Rejected,
@@ -807,6 +814,9 @@ internal sealed class QQMusicPlayerAdapter :
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        var compatibilityFailure = RefreshNativeSupport(before.ProcessId, before.Version)
+            .RejectIfUnavailable(PlayerCommand.ArmNextGuard, before, StopUnsupportedGuard);
+        if (compatibilityFailure is not null) return compatibilityFailure;
         if (_nativeAutomation.IsBlocked)
         {
             return new PlayerOperationResult(OperationOutcome.Rejected,
@@ -1056,6 +1066,9 @@ internal sealed class QQMusicPlayerAdapter :
                 var completed = await Task.WhenAny(waiters)
                     .ConfigureAwait(false);
                 cancellationToken.ThrowIfCancellationRequested();
+                // A profile update or process replacement can invalidate a live
+                // guard. Check before pre-muting or corrective player controls.
+                if (!RefreshCurrentNativeSupport().Supported) return;
 
                 if (ReferenceEquals(completed, expiration))
                 {
@@ -1894,6 +1907,11 @@ internal sealed class QQMusicPlayerAdapter :
         try
         {
             if (_nativeAutomation.IsBlocked) return _nativeAutomation.BlockedResult();
+            var nativeSupport = RefreshCurrentNativeSupport();
+            if (!nativeSupport.Supported)
+                return new QQMusicNativeEnsureResult(QQMusicNativeInsertionState.SafeRejected,
+                    false, "ExecutableCompatibilityUnavailable", nativeSupport.Message,
+                    nativeSupport.FailureCode);
             var currentState = QQMusicNativeController.ReadPlaybackState();
             var anchor = EvaluatePlaybackAnchor(currentState);
             if (!anchor.IsReliable)
@@ -2203,6 +2221,8 @@ internal sealed class QQMusicPlayerAdapter :
 
             _nativeSessionProcessId = processId;
             _nativeSessionEpoch = epoch;
+            _cachedVersionProcessId = 0;
+            _cachedVersion = string.Empty;
             _pendingNativeNext.Clear();
             _lastObservedTrack = null;
             _observedTrackSequence = 0;
@@ -2211,6 +2231,117 @@ internal sealed class QQMusicPlayerAdapter :
         // A guard is scoped to one concrete QQ process/session. Never carry
         // even an Armed guard across a restart or transient process loss.
         CancelSoftwareNext(string.Empty);
+    }
+
+    private QQMusicNativeSupportState RefreshCurrentNativeSupport()
+    {
+        var playback = QQMusicNativeController.ReadPlaybackState();
+        var processId = playback.WindowHandle is null
+            ? null : FindProcessId(playback.WindowHandle.Value);
+        return RefreshNativeSupport(processId,
+            processId is null ? string.Empty : GetCachedVersion(processId.Value));
+    }
+
+    private QQMusicNativeSupportState RefreshNativeSupport(int? processId, string version)
+    {
+        if (!AllowUnsafeNativeNext) return ApplyNativeSupport(QQMusicNativeSupportState.Disabled);
+        if (processId is null) return ApplyNativeSupport(QQMusicNativeSupportState.Disconnected);
+        try
+        {
+            lock (_nativeSupportSync)
+            {
+                // Reload only small profile documents, not DLLs. Revision changes
+                // invalidate the installation cache even when QQ keeps running.
+                var timestamp = Stopwatch.GetTimestamp();
+                if (_lastProfileReloadTimestamp == 0
+                    || Stopwatch.GetElapsedTime(_lastProfileReloadTimestamp, timestamp) >= TimeSpan.FromSeconds(2))
+                {
+                    QQMusicNativeNextProfiles.Reload();
+                    _lastProfileReloadTimestamp = timestamp;
+                }
+                using var process = Process.GetProcessById(processId.Value);
+                var epoch = process.StartTime.ToUniversalTime().Ticks;
+                var executable = process.MainModule?.FileName
+                    ?? throw new InvalidOperationException("QQ executable unavailable.");
+                var directory = Path.GetDirectoryName(executable)!;
+                var client = Path.Combine(directory, "QQMusic.dll");
+                var common = Path.Combine(directory, "QQMusicCommon.dll");
+                var api = Path.Combine(directory, "QQMusicApi.dll");
+                var modules = NativeModuleIdentity(process, [client, common, api], out var modulesMatch);
+                var identity = string.Join('|', processId, epoch, executable,
+                    QQMusicNativeNextProfiles.Revision,
+                    modules,
+                    NativeFileIdentity(client), NativeFileIdentity(common), NativeFileIdentity(api));
+                var support = _nativeSupportCache.Get(identity, () =>
+                {
+                    // Bind analysis to the visible process, not the largest helper.
+                    // Loaded modules belong in the key: an API DLL that loads
+                    // later must be able to recover an earlier unavailable probe.
+                    if (!modulesMatch) return QQMusicNativeSupportState.Unsupported(version);
+                    var analysis = QQMusicNativeNextAnalyzer.AnalyzeFiles(
+                        client, common, executable, processId, includeCandidates: false);
+                    // Candidate addresses alone are never proof of compatibility.
+                    return analysis.ExecutionAllowed
+                        ? QQMusicNativeSupportState.Ready
+                        : QQMusicNativeSupportState.Unsupported(analysis.FileVersion);
+                });
+                if (support.Supported && _nativeAutomation.IsBlocked)
+                    support = new QQMusicNativeSupportState(false,
+                        QQMusicNativeAutomation.BlockedMessage, QQMusicNativeAutomation.BlockedFailureCode);
+                return ApplyNativeSupport(support);
+            }
+        }
+        catch (System.ComponentModel.Win32Exception exception) when (exception.NativeErrorCode == 5)
+        {
+            return ApplyNativeSupport(QQMusicNativeSupportState.AccessDenied);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return ApplyNativeSupport(QQMusicNativeSupportState.AccessDenied);
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            // Incomplete installs, vanished processes and invalid contracts do
+            // not require restarting QQ; none has dispatched a native operation.
+            return ApplyNativeSupport(QQMusicNativeSupportState.Unsupported(version));
+        }
+    }
+
+    private static string NativeFileIdentity(string path)
+    {
+        var file = new FileInfo(path);
+        return file.Exists ? $"{file.Length}:{file.LastWriteTimeUtc.Ticks}" : "missing";
+    }
+
+    private static string NativeModuleIdentity(Process process, string[] paths, out bool matches)
+    {
+        var relevant = process.Modules.Cast<ProcessModule>()
+            .Where(module => paths.Any(path => Path.GetFileName(path).Equals(
+                module.ModuleName, StringComparison.OrdinalIgnoreCase)))
+            .Select(module => (module.ModuleName, module.FileName, module.BaseAddress))
+            .OrderBy(module => module.ModuleName, StringComparer.OrdinalIgnoreCase).ToArray();
+        matches = relevant.Length == paths.Length && paths.All(path => relevant.Count(module =>
+            string.Equals(module.FileName, path, StringComparison.OrdinalIgnoreCase)) == 1);
+        return string.Join(';', relevant.Select(module => $"{module.ModuleName}:{module.FileName}:{module.BaseAddress}"));
+    }
+
+    private QQMusicNativeSupportState ApplyNativeSupport(QQMusicNativeSupportState support)
+    {
+        Interlocked.Exchange(ref _nativeSupport, support);
+        if (!support.Supported) StopUnsupportedGuard(support.Message);
+        return support;
+    }
+
+    private void StopUnsupportedGuard(string message)
+    {
+        // Do not manufacture a new snapshot event on every unsupported probe.
+        // Cancellation drains through the guard's finally, restoring prior mute.
+        lock (_softwareNextSync)
+        {
+            if (_softwareNextCancellation is null && _softwareNextTarget is null
+                && _lateRecoveryTarget is null) return;
+        }
+        CancelSoftwareNext(message);
     }
 
     private static QQMusicProcessEpoch? ReadProcessEpoch(int? processId)
@@ -2234,6 +2365,9 @@ internal sealed class QQMusicPlayerAdapter :
         string executable, string argument, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        var support = RefreshCurrentNativeSupport();
+        if (!support.Supported)
+            return Task.FromResult(new QQMusicAutomaticCommandResult(false, support.Message));
         CheckAutomaticAdmission();
         return _nativeAutomation.SendAsync(token => Task.Run(() =>
         {
@@ -2462,6 +2596,9 @@ internal sealed class QQMusicPlayerAdapter :
             snapshot.ProcessId?.ToString(),
             snapshot.Version,
             snapshot.Status,
+            snapshot.Capabilities?.InsertNext.ToString(),
+            snapshot.Capabilities?.PlaySelected.ToString(),
+            snapshot.CompatibilityFailureCode,
             snapshot.PlaybackAnchorReady.ToString(),
             current?.Id,
             current?.Title,

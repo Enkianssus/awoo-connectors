@@ -1,8 +1,12 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "fileVersion": "22.71",
   "clientSha256": "0108E68BEDA8B0AF61A71911519FA4FEB5DF02417D32F4A0993868E5157624BE",
   "commonSha256": "4267E1C27F7251A31460613A97F5787FD7D9D0BE3664E5E615251ABA2780471F",
+  "apiSha256": "10ED93D19DDD4934111A7D789790DFA6953450F6F3DBD51E2CCF80BEB6B8F027",
+  "abiContract": "qqmusic-addsongs-cstring-v1",
+  "transportContract": "type4-songid-v1",
+  "stringManagerGetterRva": "0x0002B420",
   "singleSongPlayDispatchRva": "0x004B0CE4",
   "expectedPlayDispatchBytes": "E8 C7 91 16 00",
   "getCatManagerRva": "0x0000F18A",

@@ -18,5 +18,7 @@
     <Compile Include="../../src/QQMusic/QQMusicWindowTitleParser.cs" Link="QQMusicWindowTitleParser.cs" />
     <Compile Include="../../src/QQMusic/QQMusicPlaybackAnchorPolicy.cs" Link="QQMusicPlaybackAnchorPolicy.cs" />
     <Compile Include="../../src/QQMusic/QQMusicCompatibilityTypes.cs" Link="QQMusicCompatibilityTypes.cs" />
+    <None Include="../../profiles/qqmusic/22.71.json" Link="profiles/qqmusic/22.71.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../profiles/qqmusic/22.76.json" Link="profiles/qqmusic/22.76.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

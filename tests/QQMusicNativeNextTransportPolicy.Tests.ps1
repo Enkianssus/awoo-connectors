@@ -123,15 +123,15 @@ foreach ($expectedProfile in $expectedProfiles) {
     }
 }
 
-if ([string]$project.Project.PropertyGroup.Version -ne '22.71.5') {
-    throw 'QQ Music connector version must follow the tested QQ Music 22.71 branch.'
+if ([string]$project.Project.PropertyGroup.Version -ne '22.76.1') {
+    throw 'QQ Music connector version must follow the tested QQ Music 22.76 branch.'
 }
-if ($adapter -notmatch '22\.22 / 22\.41 / 22\.51 / 22\.52 / 22\.60 / 22\.61 / 22\.71') {
-    throw 'QQ Music adapter must advertise the complete tested player list through 22.71.'
+if ($adapter -notmatch 'QQMusicNativeNextProfiles\.All' -or
+    $adapter -notmatch 'profile\.SchemaVersion == 2') {
+    throw 'QQ Music runtime support metadata must follow executable schema 2 profiles.'
 }
-if ($catalogScript -notmatch "testedPlayerVersion: '22\.22 / 22\.41 / 22\.51 / 22\.52 / 22\.60 / 22\.61 / 22\.71'") {
-    throw 'QQ Music v2 catalog metadata must advertise the complete tested player list through 22.71.'
-}
+# The catalog generator's historical/new minimum-core and supported-version
+# values are exercised by catalog-v2-policy.test.mjs.
 
 Write-Output 'QQMusicNativeNextTransportPolicy.Tests passed.'
 
@@ -140,14 +140,14 @@ $type4Insertion = Get-Content -Raw -Encoding UTF8 (Join-Path $type4Root 'QQMusic
 $type4Contract = Get-Content -Raw -Encoding UTF8 (Join-Path $type4Root 'QQMusicType4Contract.cs')
 $type4Sender = Get-Content -Raw -Encoding UTF8 (Join-Path $type4Root 'QQMusicType4Transport.cs')
 $type4Journal = Get-Content -Raw -Encoding UTF8 (Join-Path $type4Root 'QQMusicType4Journal.cs')
-if ($type4Insertion -notmatch 'version != "22\.71"' -or
-    $type4Insertion -notmatch 'QQMusicNativeNextTransport\.InsertAsync' -or
+if ($type4Insertion -notmatch 'Type4Contract\.VerifyProfile\(profile\)' -or
+    $type4Insertion -notmatch 'LockAndVerifyInstallation\(request, profile\)' -or
     $type4Insertion -notmatch 'Type4Journal\.Begin' -or
     $type4Insertion -notmatch 'VerifyOpenedHandle' -or
     $type4Insertion -notmatch 'TimeSpan\.FromSeconds\(12\)') {
-    throw 'Type4 must remain an exact-22.71, journaled, opened-handle-verified path with a bounded stage observation.'
+    throw 'Type4 must remain profile-validated, journaled and opened-handle-verified with bounded stage observation.'
 }
-if ($type4Contract -notmatch '10ED93D19DDD4934111A7D789790DFA6953450F6F3DBD51E2CCF80BEB6B8F027' -or
+if ($type4Contract -notmatch 'profile\.ApiSha256' -or
     $type4Contract -notmatch 'request\.SongType != 0' -or
     $type4Sender -notmatch 'songType != 0' -or
     $type4Sender -match 'Process\.Start\(') {

@@ -29,11 +29,25 @@ jobs:
             throw "Unsupported release tag: $tag"
           }
           $version = $Matches[1]
+          $policy = node scripts/update-profile-catalog.mjs --metadata $version | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Invalid QQ profile release metadata.' }
           $asset = "awoo-qqmusic-profiles-$version.zip"
           $legacyAsset = "bilincm-qqmusic-profiles-$version.zip"
           "version=$version" >> $env:GITHUB_OUTPUT
           "asset=$asset" >> $env:GITHUB_OUTPUT
           "legacy_asset=$legacyAsset" >> $env:GITHUB_OUTPUT
+          "schema_version=$($policy.schemaVersion)" >> $env:GITHUB_OUTPUT
+          "minimum_connector_version=$($policy.minimumConnectorVersion)" >> $env:GITHUB_OUTPUT
+
+      - name: Validate profile catalog and JSON contracts
+        shell: pwsh
+        run: |
+          node --check scripts/update-profile-catalog.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Invalid profile catalog generator.' }
+          node tests/profile-catalog-policy.test.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'QQ profile catalog policy tests failed.' }
+          node scripts/update-profile-catalog.mjs --validate-pack profiles/qqmusic '${{ steps.metadata.outputs.schema_version }}'
+          if ($LASTEXITCODE -ne 0) { throw 'Unsupported or malformed QQ profile document.' }
 
       - name: Build profile pack
         shell: pwsh
@@ -85,7 +99,7 @@ jobs:
             "$legacyAsset.sig" `
             "$legacyAsset.sha256" `
             --title "QQ Music compatibility profiles v${{ steps.metadata.outputs.version }}" `
-            --notes "Signed QQ Music compatibility profiles. No player binaries or user data are included."
+            --notes "Signed QQ Music compatibility profiles, schema ${{ steps.metadata.outputs.schema_version }}; requires connector ${{ steps.metadata.outputs.minimum_connector_version }} or newer. The legacy schema 1 catalog entry remains unchanged. No player binaries or user data are included."
 
       - name: Prewarm QQ profile assets in R2
         shell: pwsh
@@ -181,6 +195,7 @@ jobs:
             "${{ steps.signing.outputs.legacy_sha256 }}" `
             "${{ steps.signing.outputs.legacy_signature }}" `
             "${{ steps.signing.outputs.legacy_size }}"
+          if ($LASTEXITCODE -ne 0) { throw 'QQ profile catalog generation failed.' }
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add qqmusic-profile-catalog.json
@@ -188,6 +203,8 @@ jobs:
           git push origin main
 
       - name: Clean old QQ profile R2 objects
+        # Publication authorizes the new assets, not removal of historical caches.
+        if: github.ref_name != 'qqmusic-profiles-v1.4.0'
         shell: pwsh
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.ENKIANSSUS_CLOUDFLARE_API_TOKEN }}

@@ -1,4 +1,5 @@
 using QQMusicControlPoc;
+using System.Text.Json;
 
 // Pure managed interpretation of the REAL emitted x86 bytes. No inspected DLL
 // is loaded, no machine code is executed, no process/UI/network API is called.
@@ -14,22 +15,74 @@ void Reject(Action action, string name)
     catch (InvalidOperationException) { Check(true, name); return; }
     throw new InvalidOperationException("Expected rejection: " + name);
 }
-var profile = new QQMusicNativeNextProfile("22.71", Type4Contract.ClientHash, Type4Contract.CommonHash,
-    0x004B0CE4, [0xE8, 0xC7, 0x91, 0x16, 0], 0xF18A, 0x2E283,
-    0x4BB70, 0x4B6B0, 0x462600, 0xC6B1C8, 0x63CAF0, 0x63CC50,
-    0x5134E0, 0xA0, "Exact reviewed fixture; not execution permission.");
+// Load the release's actual profile documents through the production loader.
+// The test never copies reviewed addresses into an independent fixture which
+// could silently drift away from what will be packaged for users.
+const string profileEnvironmentVariable = "BILINCM_QQMUSIC_PROFILE_DIR";
+var previousProfileDirectory = Environment.GetEnvironmentVariable(profileEnvironmentVariable);
+var reviewedProfiles = new List<QQMusicNativeNextProfile>();
+try
+{
+    Environment.SetEnvironmentVariable(profileEnvironmentVariable, null);
+    QQMusicNativeNextProfiles.Reload();
+    foreach (var version in new[] { "22.71", "22.76" })
+    {
+        using var fixture = JsonDocument.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory,
+            "profiles", "qqmusic", version + ".json")));
+        var document = fixture.RootElement;
+        Check(document.GetProperty("fileVersion").GetString() == version, "packaged profile exact version " + version);
+        var loaded = QQMusicNativeNextProfiles.Find(version,
+            document.GetProperty("clientSha256").GetString()!,
+            document.GetProperty("commonSha256").GetString()!,
+            document.GetProperty("apiSha256").GetString()!);
+        Check(loaded is not null, "production loader accepts packaged profile " + version);
+        Type4Contract.VerifyProfile(loaded!);
+        reviewedProfiles.Add(loaded!);
+    }
+    Check(QQMusicNativeNextProfiles.Find("22.76", reviewedProfiles[1].ClientSha256,
+        reviewedProfiles[1].CommonSha256, reviewedProfiles[0].ApiSha256) is null,
+        "22.76 rejects the 22.71 API module");
+}
+finally
+{
+    Environment.SetEnvironmentVariable(profileEnvironmentVariable, previousProfileDirectory);
+}
+var profile = reviewedProfiles[0];
 Check(QQMusicNativeNextTransport.RequireContextStringManagerRva(profile) == 0x2B420, "exact getter");
 foreach (var invalid in new[] {
-    profile with { FileVersion = "22.61" }, profile with { ClientSha256 = new string('0', 64) },
-    profile with { CommonSha256 = new string('0', 64) }, profile with { AddSongsRva = 0x462601 },
+    profile with { SchemaVersion = 1 }, profile with { ClientSha256 = "" },
+    profile with { CommonSha256 = "invalid" }, profile with { ApiSha256 = "" },
+    profile with { AbiContract = "unsafe-cstring-v2" }, profile with { TransportContract = "raw-message" },
+    profile with { StringManagerGetterRva = 0 }, profile with { AddSongsRva = -1 },
     profile with { SongItemSize = 0xA4 }, profile with { ExpectedPlayDispatchBytes = [0x90] } })
     Reject(() => QQMusicNativeNextTransport.BuildUiTrampoline((nint)Scenario.Data,
         (nint)Scenario.Client, (nint)Scenario.Common, invalid), "unreviewed ABI must not emit");
 
+// A future signed profile can move all functions/globals without changing this
+// binary or its fixed calling convention. This fixture is never used on QQ.
+var future = profile with { FileVersion = "99.42", ClientSha256 = new string('A', 64),
+    CommonSha256 = new string('B', 64), ApiSha256 = new string('C', 64),
+    SingleSongPlayDispatchRva = profile.SingleSongPlayDispatchRva + 0x400,
+    StringManagerGetterRva = profile.StringManagerGetterRva + 0x400,
+    SongItemConstructorRva = profile.SongItemConstructorRva + 0x400,
+    SongItemDestructorRva = profile.SongItemDestructorRva + 0x400,
+    AddSongsRva = profile.AddSongsRva + 0x400,
+    GetCatManagerRva = profile.GetCatManagerRva + 0x400,
+    GetQqUinExRva = profile.GetQqUinExRva + 0x400,
+    HiddenCategoryIdRva = profile.HiddenCategoryIdRva + 0x400,
+    GetListRootRva = profile.GetListRootRva + 0x400,
+    GetListHelperRva = profile.GetListHelperRva + 0x400,
+    GetCategoryCountRva = profile.GetCategoryCountRva + 0x400 };
+new Scenario(future, Check).Run();
+Check(QQMusicNativeNextTransport.RequireContextStringManagerRva(future) == future.StringManagerGetterRva,
+    "future profile uses its own getter without a version allowlist");
+Check(!QQMusicNativeProfileContract.SameExecutionContract(profile, future), "changed profile rejected during insertion");
+
+foreach (var reviewed in reviewedProfiles)
 foreach (var count in new[] { 1, 2, 3, 7 })
 foreach (var eax in new uint[] { 0, 1, 0x80004005, 0xFFFFFFFF, 0xC0000005 })
 {
-    var scenario = new Scenario(profile, Check) { CategoryCount = count, ArbitraryAddReturn = eax };
+    var scenario = new Scenario(reviewed, Check) { CategoryCount = count, ArbitraryAddReturn = eax };
     scenario.Run();
     Check(scenario.NilAcquires == 1 && scenario.AddCalls == 1, "one acquire transferred to one call");
     Check(scenario.Memory.Read(Scenario.NilHeader + 12) == 2, "native nil reference balanced");
@@ -43,9 +96,10 @@ foreach (var eax in new uint[] { 0, 1, 0x80004005, 0xFFFFFFFF, 0xC0000005 })
     Check(scenario.Memory.Read(Scenario.Data + 0xCC) == count, "category count retained");
 }
 
+foreach (var reviewed in reviewedProfiles)
 foreach (var failure in new[] { "cat-error", "cat-null", "song-error", "manager-null", "nil-null" })
 {
-    var scenario = new Scenario(profile, Check) { Failure = failure };
+    var scenario = new Scenario(reviewed, Check) { Failure = failure };
     scenario.Run();
     Check(scenario.AddCalls == 0 && scenario.NilAcquires == 0, failure + " never calls AddSongs");
     Check(scenario.Memory.Read(Scenario.Data + 16) == 0x80004005, failure + " retains incomplete sentinel");
@@ -73,7 +127,7 @@ foreach (var count in new[] { 1, 2, 3 })
     Check(memory.Read(Scenario.Data + 0xD0) == unchecked((uint)(count - 2)), "old destructor corrupts index");
 }
 
-Console.WriteLine($"QQ native ABI tests passed ({checks} checks; managed x86 simulation, no QQ execution).");
+Console.WriteLine($"QQ native ABI tests passed ({checks} checks; actual 22.71/22.76 profiles and future-profile managed x86 simulation, no QQ execution).");
 
 sealed class Scenario(QQMusicNativeNextProfile profile, Action<bool, string> check)
 {
@@ -150,7 +204,7 @@ sealed class Scenario(QQMusicNativeNextProfile profile, Action<bool, string> che
             Memory.Write(Data + 0x18, SongId);
             Volatile(vm, Failure == "song-error" ? 0x80004005u : 0); return 28;
         });
-        Hook(Client + 0x2B420, "string-manager", vm =>
+        Hook(Client + (uint)profile.StringManagerGetterRva, "string-manager", vm =>
         {
             check(Memory.Read(Data) == 3, "string acquisition occurs after song resolution");
             Volatile(vm, Failure == "manager-null" ? 0u : StringManager); return 0;

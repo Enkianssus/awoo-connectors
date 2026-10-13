@@ -73,6 +73,9 @@ if (!metadata.versionPattern.test(version)) {
 // later revision uses that backend. New backend branches need an explicit review.
 const usesQqWebContract = connectorId === 'qqmusic'
   && ['22.61.2', '22.61.3', '22.61.4'].includes(version);
+// 22.76 native-support snapshots require the 1.2.5 core to stop unsupported
+// insertion/recovery attempts. This is a behavior dependency.
+const usesQqProfileContract = connectorId === 'qqmusic' && /^22\.76\./.test(version);
 if (runtime !== metadata.runtime) {
   throw new Error(
     `${connectorId} must publish for ${metadata.runtime}, received ${runtime}`
@@ -132,9 +135,11 @@ catalog.connectors[connectorId] = {
   channel: 'stable',
   version,
   protocolVersion: 1,
-  minimumCoreVersion: usesQqWebContract ? '1.2.1' : metadata.minimumCoreVersion || '1.1.10',
+  minimumCoreVersion: usesQqProfileContract ? '1.2.5'
+    : usesQqWebContract ? '1.2.1' : metadata.minimumCoreVersion || '1.1.10',
   playerVersionPolicy: metadata.playerVersionPolicy,
-  testedPlayerVersion: usesQqWebContract ? '22.61' : metadata.testedPlayerVersion,
+  testedPlayerVersion: usesQqProfileContract ? '22.71 / 22.76'
+    : usesQqWebContract ? '22.61' : metadata.testedPlayerVersion,
   publishedAt,
   package: {
     deployment: 'framework-dependent',

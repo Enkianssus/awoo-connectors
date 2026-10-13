@@ -36,6 +36,10 @@ internal sealed record QQMusicNativeNextAnalysis(
 {
     [JsonIgnore]
     public QQMusicNativeNextProfile? Profile { get; init; }
+
+    public string ApiModulePath { get; init; } = string.Empty;
+
+    public string ApiSha256 { get; init; } = string.Empty;
 }
 
 internal sealed record QQMusicNativeModuleSet(
@@ -68,7 +72,8 @@ internal static class QQMusicNativeNextAnalyzer
         string clientModulePath,
         string commonModulePath,
         string executablePath,
-        int? processId = null)
+        int? processId = null,
+        bool includeCandidates = true)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(clientModulePath);
         ArgumentException.ThrowIfNullOrWhiteSpace(commonModulePath);
@@ -77,32 +82,41 @@ internal static class QQMusicNativeNextAnalyzer
         var clientFullPath = Path.GetFullPath(clientModulePath);
         var commonFullPath = Path.GetFullPath(commonModulePath);
         var executableFullPath = Path.GetFullPath(executablePath);
+        var apiFullPath = Path.Combine(Path.GetDirectoryName(executableFullPath)!, "QQMusicApi.dll");
         var clientSha256 = ComputeSha256(clientFullPath);
         var commonSha256 = ComputeSha256(commonFullPath);
+        var apiSha256 = File.Exists(apiFullPath) ? ComputeSha256(apiFullPath) : string.Empty;
         var fileVersion = FileVersionInfo
             .GetVersionInfo(clientFullPath)
             .FileVersion
             ?? string.Empty;
         var client = PortableExecutableImage.Load(clientFullPath);
         var common = PortableExecutableImage.Load(commonFullPath);
+        var api = File.Exists(apiFullPath) ? PortableExecutableImage.Load(apiFullPath) : null;
         var profile = QQMusicNativeNextProfiles.Find(
             fileVersion,
             clientSha256,
-            commonSha256);
+            commonSha256,
+            apiSha256)
+            ?? QQMusicNativeNextProfiles.Find(fileVersion, clientSha256, commonSha256);
         var checks = BuildChecks(
             client,
             common,
+            api,
             executableFullPath,
             clientFullPath,
             commonFullPath,
             fileVersion,
             clientSha256,
             commonSha256,
+            apiSha256,
             profile);
         var requiredChecksPassed = checks
             .Where(check => check.Required)
             .All(check => check.Passed);
-        var candidates = BuildCandidates(client, common, profile);
+        var candidates = includeCandidates
+            ? BuildCandidates(client, common, profile)
+            : Array.Empty<QQMusicNativeNextCandidate>();
         var executionAllowed =
             profile is not null && requiredChecksPassed;
         var summary = executionAllowed
@@ -131,7 +145,9 @@ internal static class QQMusicNativeNextAnalyzer
             candidates,
             summary)
         {
-            Profile = profile
+            Profile = profile,
+            ApiModulePath = apiFullPath,
+            ApiSha256 = apiSha256
         };
     }
 
@@ -199,12 +215,14 @@ internal static class QQMusicNativeNextAnalyzer
     private static IReadOnlyList<QQMusicNativeNextAnalysisCheck> BuildChecks(
         PortableExecutableImage client,
         PortableExecutableImage common,
+        PortableExecutableImage? api,
         string executablePath,
         string clientPath,
         string commonPath,
         string fileVersion,
         string clientSha256,
         string commonSha256,
+        string apiSha256,
         QQMusicNativeNextProfile? profile)
     {
         var checks = new List<QQMusicNativeNextAnalysisCheck>();
@@ -220,6 +238,9 @@ internal static class QQMusicNativeNextAnalyzer
             true,
             common.Machine == ImageFileMachineI386,
             $"QQMusicCommon.dll Machine=0x{common.Machine:X4}");
+        AddCheck(checks, "x86-api", true,
+            api?.Machine == ImageFileMachineI386,
+            api is null ? "QQMusicApi.dll missing" : $"QQMusicApi.dll Machine=0x{api.Machine:X4}");
         AddCheck(
             checks,
             "module-names",
@@ -292,6 +313,24 @@ internal static class QQMusicNativeNextAnalyzer
                 profile.CommonSha256,
                 StringComparison.OrdinalIgnoreCase),
             commonSha256);
+        AddCheck(checks, "api-sha256", true,
+            !string.IsNullOrEmpty(apiSha256)
+                && string.Equals(apiSha256, profile.ApiSha256, StringComparison.OrdinalIgnoreCase),
+            apiSha256);
+        try
+        {
+            QQMusicNativeProfileContract.Verify(profile);
+            AddCheck(checks, "executable-abi-contract", true, true,
+                $"{profile.AbiContract} / {profile.TransportContract}");
+        }
+        catch (InvalidOperationException)
+        {
+            AddCheck(checks, "executable-abi-contract", true, false,
+                "Profile does not describe a supported executable ABI and transport contract.");
+        }
+        AddCheck(checks, "client-string-manager-getter", true,
+            client.IsExecutableRva(profile.StringManagerGetterRva),
+            $"RVA=0x{profile.StringManagerGetterRva:X8}");
         AddCheck(
             checks,
             "dispatch-bytes",

@@ -69,7 +69,9 @@ internal sealed record PlayerSnapshot(
     string? NextObservation = null,
     bool PlaybackAnchorReady = false,
     NextGuardState NextGuardState = NextGuardState.None,
-    long NextGuardId = 0);
+    long NextGuardId = 0,
+    PlayerCapabilities? Capabilities = null,
+    string? CompatibilityFailureCode = null);
 
 internal sealed record PlayerOperationResult(
     OperationOutcome Outcome,

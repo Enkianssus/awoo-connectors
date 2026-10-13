@@ -21,6 +21,13 @@ static void Assert(bool condition, string message)
     }
 }
 
+static void RejectContract(QQMusicNativeNextProfile profile, string message)
+{
+    try { QQMusicNativeProfileContract.Verify(profile); }
+    catch (InvalidOperationException) { return; }
+    throw new InvalidOperationException(message);
+}
+
 static string WithInvalidField(string json, string field, JsonNode? value)
 {
     var document = JsonNode.Parse(json)!.AsObject();
@@ -83,16 +90,42 @@ try
         ["invalid-dispatch-hex"] = WithInvalidField(profileJson, "expectedPlayDispatchBytes", JsonValue.Create("E8 ZZ 8D 16 00")),
         ["invalid-rva"] = WithInvalidField(profileJson, "addSongsRva", JsonValue.Create("invalid"))
     };
+    foreach (var field in new[] { "apiSha256", "abiContract", "transportContract", "stringManagerGetterRva" })
+        invalidProfiles["missing-v2-" + field] = WithInvalidField(newProfileJson, field, null);
+    foreach (var field in new[] { "singleSongPlayDispatchRva", "getCatManagerRva", "getQqUinExRva",
+        "songItemConstructorRva", "songItemDestructorRva", "addSongsRva", "hiddenCategoryIdRva",
+        "getListRootRva", "getListHelperRva", "getCategoryCountRva", "stringManagerGetterRva" })
+    foreach (var value in new[] { "0", "-1", "0x10000000", "0xFFFFFFFF", "2147483648" })
+        invalidProfiles["invalid-v2-" + field + value] = WithInvalidField(newProfileJson, field, JsonValue.Create(value));
+    invalidProfiles["unknown-v2-field"] = WithInvalidField(newProfileJson, "vtableOffset", JsonValue.Create("0x10"));
+    invalidProfiles["unknown-v2-abi"] = WithInvalidField(newProfileJson, "abiContract", JsonValue.Create("future-unknown"));
+    invalidProfiles["unknown-v2-transport"] = WithInvalidField(newProfileJson, "transportContract", JsonValue.Create("future-unknown"));
+    invalidProfiles["invalid-v2-api-hash"] = WithInvalidField(newProfileJson, "apiSha256", JsonValue.Create("ZZ" + new string('0', 62)));
+    invalidProfiles["invalid-v2-dispatch-opcode"] = WithInvalidField(newProfileJson, "expectedPlayDispatchBytes", JsonValue.Create("E9 00 00 00 00"));
+    invalidProfiles["invalid-v2-dispatch-target"] = WithInvalidField(newProfileJson, "expectedPlayDispatchBytes", JsonValue.Create("E8 FF FF FF 7F"));
+    invalidProfiles["invalid-v2-size"] = WithInvalidField(newProfileJson, "songItemSize", JsonValue.Create("0xA4"));
+    invalidProfiles["duplicate-field"] = newProfileJson.Replace("{", "{\"fileVersion\":\"shadow-version\",", StringComparison.Ordinal);
+    invalidProfiles["duplicate-case-field"] = newProfileJson.Replace("{", "{\"FILEVERSION\":\"shadow-version\",", StringComparison.Ordinal);
+    invalidProfiles["schema1-cannot-opt-into-abi"] = WithInvalidField(newProfileJson, "schemaVersion", JsonValue.Create(1));
     foreach (var (name, json) in invalidProfiles)
     {
         File.WriteAllText(Path.Combine(temporaryDirectory.FullName, name + ".json"), json);
     }
 
-    // The production loader caches its first read. Configure the environment
-    // before touching All or Find, without reflection or test-only loader code.
+    // Exercise the production snapshot loader and reload entry point.
     Environment.SetEnvironmentVariable(environmentVariable, temporaryDirectory.FullName);
     var profile = AssertIdentityLock(version, clientHash, commonHash);
     var newProfile = AssertIdentityLock(newVersion, newClientHash, newCommonHash);
+    QQMusicNativeProfileContract.Verify(newProfile);
+    RejectContract(profile, "A historical schema 1 document must never authorize the CString ABI.");
+    Assert(newProfile.SchemaVersion == 2 && newProfile.StringManagerGetterRva == 0x2B420,
+        "The schema 2 profile must retain its reviewed string manager getter.");
+    Assert(ReferenceEquals(newProfile, QQMusicNativeNextProfiles.Find(newVersion, newClientHash, newCommonHash,
+        newProfile.ApiSha256.ToLowerInvariant())), "Execution selection must match the API fingerprint case-insensitively.");
+    Assert(QQMusicNativeNextProfiles.Find(newVersion, newClientHash, newCommonHash, DifferentHash(newProfile.ApiSha256)) is null,
+        "A mixed API DLL must not select a profile.");
+    Assert(QQMusicNativeNextProfiles.Find(version, clientHash, commonHash, newProfile.ApiSha256) is null,
+        "Three matching legacy fields cannot opt into a new wire contract.");
     Assert(QQMusicNativeNextProfiles.All.Count == 4,
         "Malformed profiles must not replace or add to the two built-ins and two valid external profiles.");
     Assert(QQMusicNativeNextProfiles.Find(version, newClientHash, newCommonHash) is null
@@ -145,7 +178,74 @@ try
         is { AddSongsRva: 0x0043DA80 },
         "The 22.41 built-in profile must survive malformed external documents.");
 
-    Console.WriteLine("QQ Music external profile tests passed (22.61 and 22.71, exact versions, dual hashes, mixed-build rejection, malformed documents, built-ins).");
+    var stableRevision = QQMusicNativeNextProfiles.Revision;
+    QQMusicNativeNextProfiles.Reload();
+    Assert(QQMusicNativeNextProfiles.Revision == stableRevision, "Unchanged reloads must preserve revision.");
+    var legacy = JsonNode.Parse(newProfileJson)!.AsObject();
+    legacy["schemaVersion"] = 1;
+    foreach (var field in new[] { "apiSha256", "abiContract", "transportContract", "stringManagerGetterRva" }) legacy.Remove(field);
+    legacy["addSongsRva"] = "0x00462601";
+    File.WriteAllText(Path.Combine(temporaryDirectory.FullName, "zz-legacy-downgrade.json"), legacy.ToJsonString());
+    QQMusicNativeNextProfiles.Reload();
+    Assert(QQMusicNativeNextProfiles.Find(newVersion, newClientHash, newCommonHash)?.SchemaVersion == 2
+        && QQMusicNativeNextProfiles.Find(newVersion, newClientHash, newCommonHash)?.AddSongsRva == newProfile.AddSongsRva,
+        "Later schema 1 packs must not replace a schema 2 profile of the same identity.");
+    Assert(QQMusicNativeNextProfiles.Revision == stableRevision, "Rejected legacy downgrade must not change revision.");
+
+    var bundledFixtureDirectory = Path.Combine(AppContext.BaseDirectory, "profiles", "qqmusic");
+    Directory.CreateDirectory(bundledFixtureDirectory);
+    var bundledFixture = Path.Combine(bundledFixtureDirectory, "test-owned-" + Guid.NewGuid().ToString("N") + ".json");
+    try
+    {
+        File.WriteAllText(bundledFixture, newProfileJson);
+        File.WriteAllText(Path.Combine(temporaryDirectory.FullName, "22.71.json"), legacy.ToJsonString());
+        QQMusicNativeNextProfiles.Reload();
+        Assert(QQMusicNativeNextProfiles.Find(newVersion, newClientHash, newCommonHash, newProfile.ApiSha256)
+            is { SchemaVersion: 2, AddSongsRva: 0x00462600 },
+            "A configured frozen pack must not shadow the bundled schema 2 profile.");
+    }
+    finally
+    {
+        File.WriteAllText(Path.Combine(temporaryDirectory.FullName, "22.71.json"), newProfileJson);
+        File.Delete(bundledFixture); // Exact unique fixture owned by this test.
+        QQMusicNativeNextProfiles.Reload();
+    }
+
+    var future = JsonNode.Parse(newProfileJson)!.AsObject();
+    future["fileVersion"] = "99.42";
+    future["clientSha256"] = new string('A', 64);
+    future["commonSha256"] = new string('B', 64);
+    future["apiSha256"] = new string('C', 64);
+    future["stringManagerGetterRva"] = "0x0002C420";
+    var futurePath = Path.Combine(temporaryDirectory.FullName, "future-profile.json");
+    File.WriteAllText(futurePath, future.ToJsonString());
+    QQMusicNativeNextProfiles.Reload();
+    var selectedFuture = QQMusicNativeNextProfiles.Find("99.42", new string('A', 64), new string('B', 64), new string('C', 64));
+    Assert(selectedFuture is not null && selectedFuture.StringManagerGetterRva == 0x2C420,
+        "The same running binary must discover a future external schema 2 profile after reload.");
+    QQMusicNativeProfileContract.Verify(selectedFuture!);
+    Assert(QQMusicNativeNextProfiles.Revision > stableRevision, "New profile must invalidate capability cache.");
+    stableRevision = QQMusicNativeNextProfiles.Revision;
+    future["evidence"] = "Only diagnostic text changed.";
+    File.WriteAllText(futurePath, future.ToJsonString());
+    QQMusicNativeNextProfiles.Reload();
+    Assert(QQMusicNativeNextProfiles.Revision == stableRevision, "Evidence-only edits do not change execution identity.");
+
+    var alternate = JsonNode.Parse(future.ToJsonString())!.AsObject();
+    alternate["apiSha256"] = new string('D', 64);
+    File.WriteAllText(Path.Combine(temporaryDirectory.FullName, "future-api-variant.json"), alternate.ToJsonString());
+    QQMusicNativeNextProfiles.Reload();
+    Assert(QQMusicNativeNextProfiles.Find("99.42", new string('A', 64), new string('B', 64), new string('C', 64))?.ApiSha256 == new string('C', 64)
+        && QQMusicNativeNextProfiles.Find("99.42", new string('A', 64), new string('B', 64), new string('D', 64))?.ApiSha256 == new string('D', 64),
+        "The same client/common pair can retain distinct exact API variants without selection ambiguity.");
+    Assert(QQMusicNativeNextProfiles.Find("99.42", new string('A', 64), new string('B', 64), new string('E', 64)) is null,
+        "An unknown API variant is never selected via a legacy three-part match.");
+    File.Delete(futurePath);
+    QQMusicNativeNextProfiles.Reload();
+    Assert(QQMusicNativeNextProfiles.Find("99.42", new string('A', 64), new string('B', 64), new string('C', 64)) is null,
+        "Removing a profile must invalidate its former executable support.");
+
+    Console.WriteLine($"QQ Music external profile tests passed (schema 1/2, {invalidProfiles.Count} malformed documents, triple hashes, future profiles, reload, downgrade protection, API variants).");
 }
 finally
 {

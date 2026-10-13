@@ -11,7 +11,7 @@ internal sealed record Type4Receipt(Guid OperationId, bool Attempted, bool Trans
 internal static class Type4OutcomePolicy
 {
     internal const string AcceptedVerification = "NativeNextInsertedMemoryRetainedPendingNextVerification";
-    internal const string TransportName = "QQMusic 22.71 Type4 validated UI callback trampoline -> AddSongs(mode=0)";
+    internal const string TransportName = "QQMusic profile-validated Type4 UI callback trampoline -> AddSongs(mode=0)";
     internal static bool MustObserveStage(Type4Transport.DeliveryReceipt receipt) => receipt.SendAttempted;
     internal static bool CanReleaseRemoteMemory(bool patchWriteAttempted) => !patchWriteAttempted;
 
@@ -29,7 +29,7 @@ internal static class Type4OutcomePolicy
 }
 
 /// <summary>
-/// Uses the validated Type4 envelope only on the exact 22.71 installation.
+/// Uses the validated Type4 envelope on an exact schema 2 profile installation.
 /// Every exposed operation has a durable process-epoch journal before mutation;
 /// connector restart cannot turn an uncertain callback into a safe retry.
 /// </summary>
@@ -39,19 +39,23 @@ internal static class QQMusicType4Insertion
         QQMusicSongReference song, int anchorProcessId, TimeSpan? responseWindow = null)
     {
         Type4Request request;
+        QQMusicNativeNextProfile profile;
         try
         {
             using var process = Process.GetProcessById(anchorProcessId);
             var executable = process.MainModule?.FileName
                 ?? throw new InvalidOperationException("QQ executable path is unavailable.");
-            var version = FileVersionInfo.GetVersionInfo(
-                Path.Combine(Path.GetDirectoryName(executable)!, "QQMusic.dll")).FileVersion;
-            if (version != "22.71")
-                return await QQMusicNativeNextTransport.InsertAsync(song, anchorProcessId, responseWindow)
-                    .ConfigureAwait(false);
             request = new(Guid.NewGuid(), anchorProcessId, process.StartTime.ToUniversalTime().Ticks,
                 executable, song.SongId, song.SongType);
             Type4Contract.ValidateRequest(request);
+            var folder = Path.GetDirectoryName(executable)!;
+            var analysis = QQMusicNativeNextAnalyzer.AnalyzeFiles(Path.Combine(folder, "QQMusic.dll"),
+                Path.Combine(folder, "QQMusicCommon.dll"), executable, anchorProcessId, includeCandidates: false);
+            if (!analysis.ExecutionAllowed || analysis.Profile is null)
+                return Rejected(song, anchorProcessId, "profile-not-supported", analysis.Summary)
+                    with { FailureCode = "player-version-unsupported" };
+            profile = analysis.Profile;
+            Type4Contract.VerifyProfile(profile);
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
@@ -73,11 +77,11 @@ internal static class QQMusicType4Insertion
             journal = Type4Journal.Begin(Type4Journal.DefaultDirectory, request);
             if (!OperatingSystem.IsWindows() || RuntimeInformation.ProcessArchitecture != Architecture.X86)
                 throw new InvalidOperationException("Type4 insertion requires Windows x86.");
-            files = Type4Contract.LockAndVerifyInstallation(request);
+            files = Type4Contract.LockAndVerifyInstallation(request, profile);
             void VerifyIdentity() => Type4Contract.VerifyIdentity(request);
-            var sender = new Type4Transport(request.Executable, () => { VerifyIdentity(); attempted = true; });
+            var sender = new Type4Transport(request.Executable, profile, () => { VerifyIdentity(); attempted = true; });
             nativeCallEntered = true;
-            result = await QQMusicNativeNextTransport.InsertType4Async(song, request.ProcessId,
+            result = await QQMusicNativeNextTransport.InsertType4Async(song, request.ProcessId, profile,
                 (pid, reference) => delivery = sender.SendOnce(pid, reference), VerifyIdentity,
                 handle => Type4Contract.VerifyOpenedHandle(request, handle),
                 responseWindow ?? TimeSpan.FromSeconds(12)).ConfigureAwait(false);

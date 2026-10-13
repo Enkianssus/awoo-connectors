@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <RuntimeIdentifier></RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
+    <PublishSingleFile>false</PublishSingleFile>
+    <EnableWindowsTargeting>false</EnableWindowsTargeting>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../src/QQMusic/QQMusicNativeSupportPolicy.cs" Link="QQMusicNativeSupportPolicy.cs" />
+    <Compile Include="../../src/QQMusic/LegacyPlayerContracts.cs" Link="LegacyPlayerContracts.cs" />
+  </ItemGroup>
+</Project>

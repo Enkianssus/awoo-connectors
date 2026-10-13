@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 2,
+  "fileVersion": "22.76",
+  "clientSha256": "3017A10DD9B3B7AF7B7EEF699E02DF1CF96EC46BBD303FA8FF7666CBBAE7862E",
+  "commonSha256": "B7E0652E740F08E360FBF5FE8B7FD4E57D33C70016E768275EC86C1879F205CD",
+  "apiSha256": "AE72397149E9BA3A1397D2DCE7BB9958C03FE1E6CDB88A253856EAA0B438A888",
+  "abiContract": "qqmusic-addsongs-cstring-v1",
+  "transportContract": "type4-songid-v1",
+  "stringManagerGetterRva": "0x0002B420",
+  "singleSongPlayDispatchRva": "0x004B2344",
+  "expectedPlayDispatchBytes": "E8 E7 92 16 00",
+  "getCatManagerRva": "0x0000F18A",
+  "getQqUinExRva": "0x0002E283",
+  "songItemConstructorRva": "0x0004BB70",
+  "songItemDestructorRva": "0x0004B6B0",
+  "addSongsRva": "0x00463C70",
+  "hiddenCategoryIdRva": "0x00C6D1C8",
+  "getListRootRva": "0x0063E270",
+  "getListHelperRva": "0x0063E3D0",
+  "getCategoryCountRva": "0x00514D00",
+  "songItemSize": "0xA0",
+  "evidence": "2026-10-13: disk calibration of QQMusic2276.03.35.27. Menu and playsong single-item call chains cross-check the AddSongs, SongItem lifecycle, hidden-category and list-helper targets. Full normalized AddSongs and SongItem constructor bodies match the reviewed 22.71 contract; native CString manager ownership and Type4 API instruction witnesses match. Runtime acceptance is tracked separately in the 22.76 validation report."
+}
