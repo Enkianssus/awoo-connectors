@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-10-13T12:22:48.338Z",
+  "generatedAt": "2026-10-22T10:51:47.261Z",
   "repository": "Enkianssus/awoo-connectors",
   "publicKeyId": "bilincm-connectors-2026-01",
   "connectors": {
@@ -29,21 +29,21 @@
       "id": "kugou",
       "name": "酷狗音乐",
       "channel": "stable",
-      "version": "20.1.41.1",
+      "version": "20.1.41.2",
       "protocolVersion": 1,
       "minimumCoreVersion": "1.1.10",
       "playerVersionPolicy": "20.*",
       "testedPlayerVersion": "20.1.41.27870",
-      "publishedAt": "2026-08-22T15:10:30.134Z",
+      "publishedAt": "2026-10-22T10:51:47.261Z",
       "package": {
         "deployment": "framework-dependent",
         "runtime": "win-x86",
         "runtimeChannel": "8.0",
-        "asset": "awoo-connector-kugou-20.1.41.1-win-x86-framework-dependent.zip",
-        "size": 6783403,
-        "sha256": "bc8dc38a104b586c6a1d2aeb6acddf3c501380562872c0cd6eb16af6f6b1ceba",
-        "signature": "jnkAyNYediK1wit0sBmQGr1S8Wpm2tOuse6FD3I4KD+8YMa9X03nUiUkSm9HpUoO7VfagV/Yt2X28qIfMyCHBQ==",
-        "downloadUrl": "https://app.enkianss.us/connectors/v2/download/kugou/20.1.41.1/awoo-connector-kugou-20.1.41.1-win-x86-framework-dependent.zip"
+        "asset": "awoo-connector-kugou-20.1.41.2-win-x86-framework-dependent.zip",
+        "size": 6787577,
+        "sha256": "feab59b21b13e69f20699a8927471ea7b81468ebb48fa240856ede63fb37f6c2",
+        "signature": "K+tlDmV2yF+K49RWepC66NouPSSevTMLLQnr213JSzGWGiXyAR6UqgPeOx5R9UqPgg+dufd73xB5GBvyXKmrBg==",
+        "downloadUrl": "https://app.enkianss.us/connectors/v2/download/kugou/20.1.41.2/awoo-connector-kugou-20.1.41.2-win-x86-framework-dependent.zip"
       }
     },
     "qqmusic": {
