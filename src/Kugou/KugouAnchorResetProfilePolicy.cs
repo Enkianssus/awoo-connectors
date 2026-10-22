@@ -71,4 +71,12 @@ internal static class KugouAnchorResetProfilePolicy
         return $"当前酷狗 {displayVersion} 的无切歌锚点重置失败（{detail}）；"
                + "已回退旧兼容插入逻辑。请更新酷狗连接器。";
     }
+
+    internal static string BuildUnsupported64BitPrompt(string playerVersion)
+    {
+        var displayVersion = string.IsNullOrWhiteSpace(playerVersion)
+            ? "未知"
+            : playerVersion;
+        return $"检测到 64 位酷狗（版本 {displayVersion}），无切歌插入暂不支持，已使用兼容插入";
+    }
 }

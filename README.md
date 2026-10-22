@@ -137,6 +137,16 @@ desktop ticker temporarily changes spacing, appends a localized title, or falls
 back to an older `KuGou.ini` value. Confirmed native IDs remain authoritative,
 while distinct native IDs and real title changes still advance normally.
 
+KuGou connector 20.1.41.2 recognizes 64-bit KuGou, including 20.1.41.27870.
+The x86 connector cannot read a 64-bit module list, so it reads the player
+version from the executable path and the bitness from `IsWow64Process2`. The
+anchor-history reset stays limited to the verified x86 20.0.81.27563 profile;
+64-bit KuGou reports `检测到 64 位酷狗（版本 X），无切歌插入暂不支持，已使用兼容插入`
+and uses the compatible insertion path. When the playing caption matches a song
+the connector itself inserted through IPC, that exact song keeps its identity
+instead of another recording with the same title and artist from the title
+search.
+
 The Folia connector talks only to the local Stage HTTP/WebSocket service on
 port 32107. Awoo MusicBot passes the compatibility environment variable
 `BILINCM_FOLIA_TOKEN` to the child process at

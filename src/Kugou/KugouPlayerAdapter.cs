@@ -28,6 +28,8 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
     private readonly object _currentIdentitySync = new();
     private readonly Dictionary<string, PlayerTrack> _knownTracks =
         new(StringComparer.OrdinalIgnoreCase);
+    private readonly KugouInsertedTrackMemory<PlayerTrack> _insertedTracks =
+        new(32);
     private readonly HashSet<string> _artworkLookups =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DateTimeOffset> _artworkRetryAfter =
@@ -100,6 +102,12 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
         var current = ResolveCurrentTrack(state);
         ClearPendingNextIfPlaying(current);
         var pendingNext = GetPendingNextTrack();
+        // 64-bit KuGou never reaches the x86 anchor reset, so say so from the
+        // first probe instead of waiting for an insertion.
+        var anchorStatus = target.Value.Is64Bit
+            ? KugouAnchorResetProfilePolicy.BuildUnsupported64BitPrompt(
+                target.Value.Version)
+            : _anchorResetStatus;
         return new PlayerSnapshot(
             true,
             DisplayName,
@@ -114,9 +122,9 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
                    + (string.IsNullOrWhiteSpace(_nextGuard.Status)
                        ? string.Empty
                        : $"；{_nextGuard.Status}")
-                   + (string.IsNullOrWhiteSpace(_anchorResetStatus)
+                   + (string.IsNullOrWhiteSpace(anchorStatus)
                        ? string.Empty
-                       : $"；{_anchorResetStatus}"),
+                       : $"；{anchorStatus}"),
             current,
             DateTimeOffset.Now,
             pendingNext,
@@ -967,7 +975,7 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
         KugouCopyDataResult Delivery,
         string AnchorResetMessage)> SendInsertNextAsync(
         (nint Handle, int ProcessId) endpoint,
-        string rawSongJson,
+        PlayerTrack track,
         int? currentProcessId,
         bool tryAnchorReset,
         CancellationToken cancellationToken)
@@ -981,13 +989,18 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
             anchorResetMessage = reset.Message;
         }
 
-        var payload = BuildInsertNextPayload(rawSongJson);
+        var payload = BuildInsertNextPayload(track.NativeData);
         var delivery = await Task.Run(
             () => KugouCopyDataTransport.Send(
                 endpoint.Handle,
                 payload,
                 data: 20),
             cancellationToken).ConfigureAwait(false);
+        if (delivery.Accepted)
+        {
+            RememberInsertedTrack(track);
+        }
+
         return (delivery, anchorResetMessage);
     }
 
@@ -1200,7 +1213,7 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
             {
                 var insertion = await SendInsertNextAsync(
                     endpoint.Value,
-                    track.NativeData,
+                    track,
                     endpoint.Value.ProcessId,
                     tryAnchorReset: true,
                     cancellationToken).ConfigureAwait(false);
@@ -1564,7 +1577,7 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
         // Do not run the no-track profile a second time in this recovery path.
         var insertion = await SendInsertNextAsync(
             endpoint.Value,
-            target.NativeData,
+            target,
             currentProcessId: endpoint.Value.ProcessId,
             tryAnchorReset: false,
             cancellationToken).ConfigureAwait(false);
@@ -1719,7 +1732,7 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
 
         var insertion = await SendInsertNextAsync(
             endpoint.Value,
-            displacedPending.Target.NativeData,
+            displacedPending.Target,
             currentProcessId: endpoint.Value.ProcessId,
             tryAnchorReset: true,
             cancellationToken).ConfigureAwait(false);
@@ -1942,7 +1955,7 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
         }
     }
 
-    private static (int ProcessId, string Version)? FindTarget()
+    private static (int ProcessId, string Version, bool Is64Bit)? FindTarget()
     {
         var windows = KugouNativeController.InspectWindows();
         var main = windows
@@ -1964,7 +1977,11 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
             return null;
         }
 
-        return (main.ProcessId, TryGetVersion(main.ProcessId));
+        var image = KugouProcessInspector.TryInspect(main.ProcessId);
+        return (
+            main.ProcessId,
+            image?.Version ?? string.Empty,
+            image?.Is64Bit == true);
     }
 
     private static (nint Handle, int ProcessId)? FindValidatedIpcEndpoint()
@@ -1995,23 +2012,6 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
         }
     }
 
-    private static string TryGetVersion(int processId)
-    {
-        try
-        {
-            using var process = Process.GetProcessById(processId);
-            var path = process.MainModule?.FileName;
-            return string.IsNullOrWhiteSpace(path)
-                ? string.Empty
-                : FileVersionInfo.GetVersionInfo(path).FileVersion
-                  ?? string.Empty;
-        }
-        catch
-        {
-            return string.Empty;
-        }
-    }
-
     private PlayerTrack? ResolveCurrentTrack(KugouPlaybackState state)
     {
         if (string.IsNullOrWhiteSpace(state.RawTitle))
@@ -2028,7 +2028,13 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
             state.Artist,
             string.Empty,
             state.Hash);
-        var known = FindKnownTrack(id, state.Hash);
+        // A caption that matches a song this connector inserted is that
+        // song, even when the title search found another recording.
+        var known = _insertedTracks.Find(
+            state.RawTitle,
+            state.Artist,
+            state.Title);
+        known ??= FindKnownTrack(id, state.Hash);
         known ??= FindKnownTrackByMetadata(fallback);
         var candidate = known ?? fallback;
         if (TryHoldTransientIni(state, candidate, out var held))
@@ -2201,6 +2207,33 @@ internal sealed class KugouPlayerAdapter : IPlayerAdapter
                 _knownTracks.Remove(_knownTracks.Keys.First());
             }
         }
+    }
+
+    /// <summary>
+    /// KuGou's caption cannot tell two recordings with the same title and
+    /// artist apart. Keep the exact song this connector inserted so both the
+    /// native identity (which then skips the title search) and the reported
+    /// current track prefer it while the caption matches.
+    /// </summary>
+    private void RememberInsertedTrack(PlayerTrack track)
+    {
+        using var document = JsonDocument.Parse(track.NativeData);
+        var song = document.RootElement;
+        var filename = ReadJsonTextAny(song, "filename");
+        var songName = ReadJsonTextAny(song, "songname") is { Length: > 0 } name
+            ? name
+            : track.Title;
+        var singerName = ReadJsonTextAny(song, "singername") is { Length: > 0 } singer
+            ? singer
+            : track.Artist;
+        _insertedTracks.Remember(filename, singerName, songName, track);
+        KugouNativeController.RememberInsertedSong(
+            filename,
+            songName,
+            singerName,
+            ReadJsonLongAny(song, "audio_id"),
+            ReadJsonLongAny(song, "mixsongid", "album_audio_id"),
+            ReadJsonTextAny(song, "hash"));
     }
 
     private void ScheduleArtworkLookup(PlayerTrack current)

@@ -9,5 +9,7 @@
   <ItemGroup>
     <Compile Include="..\..\src\Kugou\KugouTrackIdentityPolicy.cs"
              Link="KugouTrackIdentityPolicy.cs" />
+    <Compile Include="..\..\src\Kugou\KugouInsertedTrackMemory.cs"
+             Link="KugouInsertedTrackMemory.cs" />
   </ItemGroup>
 </Project>

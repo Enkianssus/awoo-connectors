@@ -3,7 +3,7 @@
     <OutputType>Exe</OutputType>
     <AssemblyName>Awoo.Connector.Kugou</AssemblyName>
     <RootNamespace>UnifiedPlayerControlPoc</RootNamespace>
-    <Version>20.1.41.1</Version>
+    <Version>20.1.41.2</Version>
     <InformationalVersion>$(Version)</InformationalVersion>
   </PropertyGroup>
 

@@ -13,8 +13,8 @@ $profile = [IO.File]::ReadAllText(
     (Resolve-Path (Join-Path $PSScriptRoot '..\src\Kugou\KugouAnchorResetProfilePolicy.cs')),
     [Text.Encoding]::UTF8)
 
-if ($project -notmatch '<Version>20\.1\.41\.1</Version>') {
-    throw 'KuGou connector version must start revision 1 on player branch 20.1.41.'
+if ($project -notmatch '<Version>20\.1\.41\.2</Version>') {
+    throw 'KuGou connector version must be revision 2 on player branch 20.1.41.'
 }
 if ($adapter -notmatch 'TestedVersion\s*=>\s*"20\.1\.41\.27870"') {
     throw 'KuGou TestedVersion must contain the tested full player build.'

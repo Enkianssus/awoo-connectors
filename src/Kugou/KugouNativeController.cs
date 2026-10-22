@@ -150,6 +150,8 @@ internal static class KugouNativeController
     };
     private static readonly ConcurrentDictionary<string, KugouSongIdentity>
         SongIdentityCache = new(StringComparer.Ordinal);
+    private static readonly KugouInsertedTrackMemory<KugouSongIdentity>
+        InsertedSongIdentities = new(32);
     private static readonly nint HwndMessage = new(-3);
     private const string KugouDataExchangeMappingName = @"Local\KuGouDataExchange";
     private const int KugouDataExchangeWindowOffset = 0x0e;
@@ -2232,6 +2234,11 @@ internal static class KugouNativeController
             ReadIniInt(PlaybackSection, "LastPlayingSongTable"),
             ReadIniLong(PlaybackSection, "LastPlayingSongPos"),
             lastWrite);
+        if (InsertedSongIdentities.Find(rawTitle, artist, title) is { } inserted)
+        {
+            return ApplySongIdentity(state, inserted);
+        }
+
         foreach (var key in KugouTrackIdentityPolicy.BuildIdentityKeys(
                      rawTitle,
                      artist,
@@ -2299,6 +2306,35 @@ internal static class KugouNativeController
         {
             SongIdentityCache[key] = identity;
         }
+    }
+
+    /// <summary>
+    /// Pins the identity of a song this connector inserted through IPC. It
+    /// wins over the cached title search, which can return another recording
+    /// with the same title and artist, and makes that search unnecessary.
+    /// </summary>
+    public static void RememberInsertedSong(
+        string filename,
+        string songName,
+        string singerName,
+        long audioId,
+        long mixSongId,
+        string hash)
+    {
+        if (audioId <= 0 && string.IsNullOrWhiteSpace(hash))
+        {
+            return;
+        }
+
+        InsertedSongIdentities.Remember(
+            filename,
+            singerName,
+            songName,
+            new KugouSongIdentity(
+                audioId,
+                mixSongId,
+                hash.ToUpperInvariant(),
+                "ConnectorInsert"));
     }
 
     private static KugouPlaybackState ApplySongIdentity(

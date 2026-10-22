@@ -71,6 +71,22 @@ internal static class KugouAnchorHistoryReset
         {
             target = Process.GetProcessById(expectedProcessId);
             EnsureTargetProcess(target, expectedProcessId);
+
+            // The stubs below are x86 code addressed through kugou.dll's
+            // module base, and an x86 connector cannot enumerate the
+            // modules of 64-bit KuGou. Stop before FindKugouModule.
+            var image = KugouProcessInspector.TryInspect(expectedProcessId);
+            if (image is { Is64Bit: true })
+            {
+                return new KugouAnchorResetAttempt(
+                    false,
+                    false,
+                    KugouAnchorResetProfilePolicy.BuildUnsupported64BitPrompt(
+                        image.Version),
+                    image.Version,
+                    KugouProcessInspector.TryHashFile(image.LocateKugouDll()));
+            }
+
             var module = FindKugouModule(target);
             playerVersion = FileVersionInfo.GetVersionInfo(module.FileName)
                 .FileVersion
