@@ -12,6 +12,13 @@ const string newClientHash =
     "0108E68BEDA8B0AF61A71911519FA4FEB5DF02417D32F4A0993868E5157624BE";
 const string newCommonHash =
     "4267E1C27F7251A31460613A97F5787FD7D9D0BE3664E5E615251ABA2780471F";
+const string updatedVersion = "22.80";
+const string updatedClientHash =
+    "8F8671708430EA1C7B536008976894A1BC4A9633DDE44344ADEEE30100188072";
+const string updatedCommonHash =
+    "E7D0FBBE1CCC798D3AA6DFFD955ADA8AB140FA5673750140E9FF97BCA14196D2";
+const string updatedApiHash =
+    "85B8AAA692C310E14F2F0235B45FFDBB2369B28213FDBC979FA084739CA39AAB";
 
 static void Assert(bool condition, string message)
 {
@@ -211,6 +218,67 @@ try
         QQMusicNativeNextProfiles.Reload();
     }
 
+    // Install the real new player fixture after the original snapshot has
+    // already loaded. The existing binary must discover it on reload alone.
+    Assert(QQMusicNativeNextProfiles.Find(updatedVersion, updatedClientHash, updatedCommonHash, updatedApiHash) is null,
+        "The 22.80 installation must remain unsupported before its external profile is installed.");
+    var updatedProfileJson = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "fixtures", "22.80.json"));
+    File.WriteAllText(Path.Combine(temporaryDirectory.FullName, "22.80.json"), updatedProfileJson);
+    var revisionBeforeUpdate = QQMusicNativeNextProfiles.Revision;
+    QQMusicNativeNextProfiles.Reload();
+    var updatedProfile = AssertIdentityLock(updatedVersion, updatedClientHash, updatedCommonHash);
+    QQMusicNativeProfileContract.Verify(updatedProfile);
+    Assert(ReferenceEquals(updatedProfile, QQMusicNativeNextProfiles.Find(updatedVersion,
+        updatedClientHash.ToLowerInvariant(), updatedCommonHash.ToLowerInvariant(), updatedApiHash.ToLowerInvariant())),
+        "The 22.80 execution profile must match all three reviewed hashes case-insensitively.");
+    Assert(QQMusicNativeNextProfiles.Revision > revisionBeforeUpdate,
+        "Installing the real 22.80 profile must invalidate the native-support capability cache.");
+    foreach (var hashes in new[]
+    {
+        (DifferentHash(updatedClientHash), updatedCommonHash, updatedApiHash),
+        (updatedClientHash, DifferentHash(updatedCommonHash), updatedApiHash),
+        (updatedClientHash, updatedCommonHash, DifferentHash(updatedApiHash)),
+        (string.Empty, updatedCommonHash, updatedApiHash),
+        (updatedClientHash, string.Empty, updatedApiHash),
+        (updatedClientHash, updatedCommonHash, string.Empty),
+        (newClientHash, updatedCommonHash, updatedApiHash),
+        (updatedClientHash, newCommonHash, updatedApiHash),
+        (updatedClientHash, updatedCommonHash, newProfile.ApiSha256)
+    })
+        Assert(QQMusicNativeNextProfiles.Find(updatedVersion, hashes.Item1, hashes.Item2, hashes.Item3) is null,
+            "The 22.80 execution profile must reject changed, missing or mixed-build DLL hashes.");
+    Assert(QQMusicNativeNextProfiles.Find(newVersion, updatedClientHash, updatedCommonHash, updatedApiHash) is null
+        && QQMusicNativeNextProfiles.Find(updatedVersion + ".0", updatedClientHash, updatedCommonHash, updatedApiHash) is null,
+        "All three reviewed hashes must still require the exact 22.80 file version.");
+    Assert(updatedProfile.SchemaVersion == 2
+        && updatedProfile.ApiSha256 == updatedApiHash
+        && updatedProfile.AbiContract == QQMusicNativeProfileContract.CStringAbi
+        && updatedProfile.TransportContract == QQMusicNativeProfileContract.Type4Transport
+        && updatedProfile.StringManagerGetterRva == 0x0002B5F0
+        && updatedProfile.SingleSongPlayDispatchRva == 0x004E25F4
+        && updatedProfile.ExpectedPlayDispatchBytes.SequenceEqual(new byte[] { 0xE8, 0x67, 0x91, 0x16, 0x00 })
+        && updatedProfile.GetCatManagerRva == 0x0000F18A
+        && updatedProfile.GetQqUinExRva == 0x0002E2B4
+        && updatedProfile.SongItemConstructorRva == 0x0004BAE0
+        && updatedProfile.SongItemDestructorRva == 0x0004B620
+        && updatedProfile.AddSongsRva == 0x00494300
+        && updatedProfile.HiddenCategoryIdRva == 0x00CBA1EC
+        && updatedProfile.GetListRootRva == 0x0066E270
+        && updatedProfile.GetListHelperRva == 0x0066E3D0
+        && updatedProfile.GetCategoryCountRva == 0x00544A10
+        && updatedProfile.SongItemSize == 0xA0
+        && !string.IsNullOrWhiteSpace(updatedProfile.Evidence),
+        "The external document must preserve every reviewed 22.80 native field and fixed calling contract.");
+    var revisionAfterUpdate = QQMusicNativeNextProfiles.Revision;
+    QQMusicNativeNextProfiles.Reload();
+    Assert(QQMusicNativeNextProfiles.Revision == revisionAfterUpdate,
+        "Reloading an unchanged 22.80 profile must preserve the support revision.");
+    Assert(QQMusicNativeNextProfiles.All.Count == 5
+        && QQMusicNativeNextProfiles.Find(version, clientHash, commonHash) is not null
+        && QQMusicNativeNextProfiles.Find(newVersion, newClientHash, newCommonHash, newProfile.ApiSha256) is not null,
+        "Installing 22.80 must retain the legacy and earlier schema 2 profiles.");
+    stableRevision = revisionAfterUpdate;
+
     var future = JsonNode.Parse(newProfileJson)!.AsObject();
     future["fileVersion"] = "99.42";
     future["clientSha256"] = new string('A', 64);
@@ -245,7 +313,7 @@ try
     Assert(QQMusicNativeNextProfiles.Find("99.42", new string('A', 64), new string('B', 64), new string('C', 64)) is null,
         "Removing a profile must invalidate its former executable support.");
 
-    Console.WriteLine($"QQ Music external profile tests passed (schema 1/2, {invalidProfiles.Count} malformed documents, triple hashes, future profiles, reload, downgrade protection, API variants).");
+    Console.WriteLine($"QQ Music external profile tests passed (schema 1/2, {invalidProfiles.Count} malformed documents, triple hashes, real 22.80 profile update, future profiles, reload, downgrade protection, API variants).");
 }
 finally
 {

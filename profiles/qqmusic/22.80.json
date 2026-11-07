@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 2,
+  "fileVersion": "22.80",
+  "clientSha256": "8F8671708430EA1C7B536008976894A1BC4A9633DDE44344ADEEE30100188072",
+  "commonSha256": "E7D0FBBE1CCC798D3AA6DFFD955ADA8AB140FA5673750140E9FF97BCA14196D2",
+  "apiSha256": "85B8AAA692C310E14F2F0235B45FFDBB2369B28213FDBC979FA084739CA39AAB",
+  "abiContract": "qqmusic-addsongs-cstring-v1",
+  "transportContract": "type4-songid-v1",
+  "stringManagerGetterRva": "0x0002B5F0",
+  "singleSongPlayDispatchRva": "0x004E25F4",
+  "expectedPlayDispatchBytes": "E8 67 91 16 00",
+  "getCatManagerRva": "0x0000F18A",
+  "getQqUinExRva": "0x0002E2B4",
+  "songItemConstructorRva": "0x0004BAE0",
+  "songItemDestructorRva": "0x0004B620",
+  "addSongsRva": "0x00494300",
+  "hiddenCategoryIdRva": "0x00CBA1EC",
+  "getListRootRva": "0x0066E270",
+  "getListHelperRva": "0x0066E3D0",
+  "getCategoryCountRva": "0x00544A10",
+  "songItemSize": "0xA0",
+  "evidence": "2026-11-07: QQMusic2280.02.25.56 calibrated against exact 22.76 DLLs, including public ABI, CString ownership and Type4 transport with reviewed internal changes. All 26 required analyzer checks passed. Unchanged signed connector 22.76.1 loaded this external profile and accepted one Shelter insertion; native receipt confirmed stage 5, restored dispatch, unchanged foreground/current track, no restart. User confirmed next position, retained queue, silent insertion and normal playback. See docs/QQMUSIC_22_80_VALIDATION.md for limits."
+}

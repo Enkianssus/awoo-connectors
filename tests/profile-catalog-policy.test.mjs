@@ -20,6 +20,23 @@ assert.equal(original.publicKeyId, 'bilincm-connectors-2026-01');
 assert.equal(legacy.version, '1.3.0', 'the old-core entry stays on its immutable schema 1 release');
 assert.equal(legacy.schemaVersion, 1);
 assert.equal(legacy.minimumConnectorVersion, '22.51.1');
+const current = original.profiles.qqmusicV2;
+assert.equal(current.id, 'qqmusic');
+assert.equal(current.schemaVersion, 2);
+assert.equal(current.minimumConnectorVersion, '22.76.1');
+assert.deepEqual(profileReleaseMetadata(current.version), {
+  schemaVersion: 2, catalogKey: 'qqmusicV2', minimumConnectorVersion: '22.76.1'
+}, 'the published schema 2 entry must retain the existing connector contract');
+for (const [entry, prefix] of [[current, 'bilincm'], [current.awooPackage, 'awoo']]) {
+  const asset = `${prefix}-qqmusic-profiles-${current.version}.zip`;
+  assert.equal(entry.asset, asset);
+  assert.equal(entry.downloadUrl,
+    `https://app.enkianss.us/connectors/v1/profiles/qqmusic/download/${current.version}/${asset}`);
+  assert.ok(Number.isSafeInteger(entry.size) && entry.size > 0);
+  assert.match(entry.sha256, /^[0-9a-f]{64}$/i);
+  assert.match(entry.signature, /^[A-Za-z0-9+/]{86}==$/);
+  assert.equal(Buffer.from(entry.signature, 'base64').length, 64);
+}
 
 for (const version of ['1.2.1', '1.3.0']) assert.deepEqual(profileReleaseMetadata(version), {
   schemaVersion: 1, catalogKey: 'qqmusic', minimumConnectorVersion: '22.51.1'
@@ -52,9 +69,11 @@ for (const [entry, prefix] of [[next, 'bilincm'], [next.awooPackage, 'awoo']]) {
   assert.equal(entry.signature, Buffer.alloc(64, 17).toString('base64'));
   assert.equal(entry.downloadUrl, `https://app.enkianss.us/connectors/v1/profiles/qqmusic/download/1.4.0/${asset}`);
 }
-const future = updateProfileCatalog(updated, args('1.4.1'));
+const future = updateProfileCatalog(updated, args('1.5.0'));
 assert.deepEqual(future.profiles.qqmusic, legacy);
-assert.equal(future.profiles.qqmusicV2.version, '1.4.1');
+assert.equal(future.profiles.qqmusicV2.version, '1.5.0');
+assert.equal(future.profiles.qqmusicV2.schemaVersion, 2);
+assert.equal(future.profiles.qqmusicV2.minimumConnectorVersion, '22.76.1');
 const oldGeneration = updateProfileCatalog({ ...original, profiles: {} }, args('1.3.0'));
 assert.equal(oldGeneration.profiles.qqmusic.schemaVersion, 1);
 assert.equal(oldGeneration.profiles.qqmusic.minimumConnectorVersion, '22.51.1');
@@ -72,7 +91,7 @@ for (const [index, value] of [[1, '../bad.zip'], [2, 'bad-hash'], [3, 'AAAA'], [
 
 const packDirectory = path.join(repository, 'profiles', 'qqmusic');
 const result = validateProfilePack(packDirectory, 2);
-for (const version of ['22.22', '22.41', '22.51', '22.52', '22.60', '22.61', '22.71', '22.76']) {
+for (const version of ['22.22', '22.41', '22.51', '22.52', '22.60', '22.61', '22.71', '22.76', '22.80']) {
   assert.ok(result.fileVersions.includes(version), `full profile pack retains ${version}`);
 }
 const profile = JSON.parse(fs.readFileSync(path.join(packDirectory, '22.76.json'), 'utf8'));
@@ -97,6 +116,7 @@ assert.match(workflow, /tests\/profile-catalog-policy\.test\.mjs/);
 assert.match(workflow, /minimum_connector_version=/);
 assert.match(workflow, /schema_version=/);
 assert.match(workflow, /github\.ref_name != 'qqmusic-profiles-v1\.4\.0'/);
+assert.match(workflow, /github\.ref_name != 'qqmusic-profiles-v1\.5\.0'/);
 assert.match(workflow, /awoo-qqmusic-profiles-\$version\.zip/);
 assert.match(workflow, /bilincm-qqmusic-profiles-\$version\.zip/);
 assert.match(workflow, /git add qqmusic-profile-catalog\.json/);
@@ -116,14 +136,16 @@ try {
   assert.throws(() => validateProfilePack(isolatedPack, 2), SyntaxError);
   const filename = path.join(directory, 'qqmusic-profile-catalog.json');
   fs.writeFileSync(filename, JSON.stringify(original));
-  const generated = spawnSync(process.execPath, [path.join(repository, 'scripts/update-profile-catalog.mjs'), ...args('1.4.0')],
+  const generated = spawnSync(process.execPath, [path.join(repository, 'scripts/update-profile-catalog.mjs'), ...args('1.5.0')],
     { cwd: directory, encoding: 'utf8' });
   assert.equal(generated.status, 0, generated.stderr || generated.stdout);
   const catalog = JSON.parse(fs.readFileSync(filename, 'utf8'));
   assert.deepEqual(catalog.profiles.qqmusic, legacy);
-  assert.equal(catalog.profiles.qqmusicV2.version, '1.4.0');
+  assert.equal(catalog.profiles.qqmusicV2.version, '1.5.0');
+  assert.equal(catalog.profiles.qqmusicV2.schemaVersion, 2);
+  assert.equal(catalog.profiles.qqmusicV2.minimumConnectorVersion, '22.76.1');
   const beforeInvalid = fs.readFileSync(filename);
-  const failed = spawnSync(process.execPath, [path.join(repository, 'scripts/update-profile-catalog.mjs'), ...args('1.4.0').with(2, 'bad')],
+  const failed = spawnSync(process.execPath, [path.join(repository, 'scripts/update-profile-catalog.mjs'), ...args('1.5.0').with(2, 'bad')],
     { cwd: directory, encoding: 'utf8' });
   assert.notEqual(failed.status, 0);
   assert.deepEqual(fs.readFileSync(filename), beforeInvalid, 'validation failure must leave the catalog intact');

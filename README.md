@@ -23,6 +23,12 @@ older cores or connectors. NetEase `3.1.37.205354.7` advertises
 `snapshot-events-v1`; a new core subscribes with `subscribe` and receives exact
 snapshot event envelopes, while an older core continues to use `probe`.
 
+QQ Music profile pack 1.5.0 adds the exact `QQMusic2280.02.25.56` build through
+the existing schema 2 contract. It requires connector 22.76.1 or newer and
+Awoo MusicBot 1.2.5 or newer; neither binary needs an update for this profile.
+See [22.80 validation](docs/QQMUSIC_22_80_VALIDATION.md) for evidence and limits.
+Unknown builds still fail closed; this is not a wildcard compatibility claim.
+
 QQ Music connector 22.76.1 supports the reviewed QQ 22.76 build and retains
 QQ 22.71 support using schema 2 compatibility profiles. Exact DLL fingerprints,
 call addresses and the CString manager getter are data; the connector implements

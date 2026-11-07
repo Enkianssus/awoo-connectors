@@ -204,7 +204,7 @@ jobs:
 
       - name: Clean old QQ profile R2 objects
         # Publication authorizes the new assets, not removal of historical caches.
-        if: github.ref_name != 'qqmusic-profiles-v1.4.0'
+        if: github.ref_name != 'qqmusic-profiles-v1.4.0' && github.ref_name != 'qqmusic-profiles-v1.5.0'
         shell: pwsh
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.ENKIANSSUS_CLOUDFLARE_API_TOKEN }}

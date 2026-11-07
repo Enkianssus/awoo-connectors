@@ -25,7 +25,7 @@ try
 {
     Environment.SetEnvironmentVariable(profileEnvironmentVariable, null);
     QQMusicNativeNextProfiles.Reload();
-    foreach (var version in new[] { "22.71", "22.76" })
+    foreach (var version in new[] { "22.71", "22.76", "22.80" })
     {
         using var fixture = JsonDocument.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory,
             "profiles", "qqmusic", version + ".json")));
@@ -42,6 +42,12 @@ try
     Check(QQMusicNativeNextProfiles.Find("22.76", reviewedProfiles[1].ClientSha256,
         reviewedProfiles[1].CommonSha256, reviewedProfiles[0].ApiSha256) is null,
         "22.76 rejects the 22.71 API module");
+    foreach (var previous in reviewedProfiles.Take(2))
+        Check(QQMusicNativeNextProfiles.Find("22.80", reviewedProfiles[2].ClientSha256,
+            reviewedProfiles[2].CommonSha256, previous.ApiSha256) is null,
+            "22.80 rejects the " + previous.FileVersion + " API module");
+    Check(QQMusicNativeNextTransport.RequireContextStringManagerRva(reviewedProfiles[2]) == 0x2B5F0,
+        "22.80 uses its reviewed relocated string manager getter");
 }
 finally
 {
@@ -127,7 +133,7 @@ foreach (var count in new[] { 1, 2, 3 })
     Check(memory.Read(Scenario.Data + 0xD0) == unchecked((uint)(count - 2)), "old destructor corrupts index");
 }
 
-Console.WriteLine($"QQ native ABI tests passed ({checks} checks; actual 22.71/22.76 profiles and future-profile managed x86 simulation, no QQ execution).");
+Console.WriteLine($"QQ native ABI tests passed ({checks} checks; actual 22.71/22.76/22.80 profiles and future-profile managed x86 simulation, no QQ execution).");
 
 sealed class Scenario(QQMusicNativeNextProfile profile, Action<bool, string> check)
 {
