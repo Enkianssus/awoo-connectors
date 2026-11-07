@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-10-13T12:25:18.987Z",
+  "generatedAt": "2026-11-07T10:46:11.785Z",
   "repository": "Enkianssus/awoo-connectors",
   "publicKeyId": "bilincm-connectors-2026-01",
   "profiles": {
@@ -25,21 +25,21 @@
     },
     "qqmusicV2": {
       "id": "qqmusic",
-      "version": "1.4.0",
+      "version": "1.5.0",
       "schemaVersion": 2,
       "minimumConnectorVersion": "22.76.1",
-      "asset": "bilincm-qqmusic-profiles-1.4.0.zip",
-      "size": 5262,
-      "sha256": "6856d86227c9b282e13b949e5d3b12f2de39e2749b346ad2c6a72e1ab1fbcf45",
-      "signature": "TUvRjojmBwXzNtZmxNYP5pDWKNv2341PVww7ahednMQWnkCMbqLAARmshwTWfa0L63N1amM5+ZSoIZbevYOxCw==",
-      "downloadUrl": "https://app.enkianss.us/connectors/v1/profiles/qqmusic/download/1.4.0/bilincm-qqmusic-profiles-1.4.0.zip",
-      "publishedAt": "2026-10-13T12:25:18.987Z",
+      "asset": "bilincm-qqmusic-profiles-1.5.0.zip",
+      "size": 6185,
+      "sha256": "46bb38576aa5c43e915e7984af720a40eec80b52f99d5559456f0d7e24f9e8fb",
+      "signature": "oUIoyZ7HCXjah0eHlcMYAye0WO89wmT8Ih/E0RFE0a0C/DSkv75NQhbI2exHaT/ObyBEU+ejL5K/j+LVdaB2CA==",
+      "downloadUrl": "https://app.enkianss.us/connectors/v1/profiles/qqmusic/download/1.5.0/bilincm-qqmusic-profiles-1.5.0.zip",
+      "publishedAt": "2026-11-07T10:46:11.785Z",
       "awooPackage": {
-        "asset": "awoo-qqmusic-profiles-1.4.0.zip",
-        "size": 5262,
-        "sha256": "6856d86227c9b282e13b949e5d3b12f2de39e2749b346ad2c6a72e1ab1fbcf45",
-        "signature": "TUvRjojmBwXzNtZmxNYP5pDWKNv2341PVww7ahednMQWnkCMbqLAARmshwTWfa0L63N1amM5+ZSoIZbevYOxCw==",
-        "downloadUrl": "https://app.enkianss.us/connectors/v1/profiles/qqmusic/download/1.4.0/awoo-qqmusic-profiles-1.4.0.zip"
+        "asset": "awoo-qqmusic-profiles-1.5.0.zip",
+        "size": 6185,
+        "sha256": "46bb38576aa5c43e915e7984af720a40eec80b52f99d5559456f0d7e24f9e8fb",
+        "signature": "oUIoyZ7HCXjah0eHlcMYAye0WO89wmT8Ih/E0RFE0a0C/DSkv75NQhbI2exHaT/ObyBEU+ejL5K/j+LVdaB2CA==",
+        "downloadUrl": "https://app.enkianss.us/connectors/v1/profiles/qqmusic/download/1.5.0/awoo-qqmusic-profiles-1.5.0.zip"
       }
     }
   }
