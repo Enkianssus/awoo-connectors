@@ -73,9 +73,16 @@ if (!metadata.versionPattern.test(version)) {
 // later revision uses that backend. New backend branches need an explicit review.
 const usesQqWebContract = connectorId === 'qqmusic'
   && ['22.61.2', '22.61.3', '22.61.4'].includes(version);
-// 22.76 native-support snapshots require the 1.2.5 core to stop unsupported
-// insertion/recovery attempts. This is a behavior dependency.
-const usesQqProfileContract = connectorId === 'qqmusic' && /^22\.76\./.test(version);
+// Reviewed schema 2 branches retain the 1.2.5 dynamic-support contract. Keep
+// explicit branch metadata so publishing a new branch cannot rewrite old ones.
+const qqProfileBranches = {
+  '22.76': '22.71 / 22.76',
+  '22.80': '22.71 / 22.76 / 22.80'
+};
+const qqProfileTestedVersions = connectorId === 'qqmusic'
+  ? qqProfileBranches[version.split('.').slice(0, 2).join('.')]
+  : undefined;
+const usesQqProfileContract = Boolean(qqProfileTestedVersions);
 if (runtime !== metadata.runtime) {
   throw new Error(
     `${connectorId} must publish for ${metadata.runtime}, received ${runtime}`
@@ -138,7 +145,7 @@ catalog.connectors[connectorId] = {
   minimumCoreVersion: usesQqProfileContract ? '1.2.5'
     : usesQqWebContract ? '1.2.1' : metadata.minimumCoreVersion || '1.1.10',
   playerVersionPolicy: metadata.playerVersionPolicy,
-  testedPlayerVersion: usesQqProfileContract ? '22.71 / 22.76'
+  testedPlayerVersion: usesQqProfileContract ? qqProfileTestedVersions
     : usesQqWebContract ? '22.61' : metadata.testedPlayerVersion,
   publishedAt,
   package: {

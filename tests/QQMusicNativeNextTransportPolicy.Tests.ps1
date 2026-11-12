@@ -123,8 +123,8 @@ foreach ($expectedProfile in $expectedProfiles) {
     }
 }
 
-if ([string]$project.Project.PropertyGroup.Version -ne '22.76.1') {
-    throw 'QQ Music connector version must follow the tested QQ Music 22.76 branch.'
+if ([string]$project.Project.PropertyGroup.Version -ne '22.80.1') {
+    throw 'QQ Music connector version must follow the tested QQ Music 22.80 branch.'
 }
 if ($adapter -notmatch 'QQMusicNativeNextProfiles\.All' -or
     $adapter -notmatch 'profile\.SchemaVersion == 2') {

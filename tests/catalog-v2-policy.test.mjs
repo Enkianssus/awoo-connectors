@@ -38,7 +38,7 @@ assert.equal(v2Catalog.publicKeyId, 'bilincm-connectors-2026-01');
 for (const [id, entry] of Object.entries(v2Catalog.connectors)) {
   const requiresWebCore = id === 'qqmusic'
     && ['22.61.2', '22.61.3', '22.61.4'].includes(entry.version);
-  const requiresProfileCore = id === 'qqmusic' && /^22\.76\./.test(entry.version);
+  const requiresProfileCore = id === 'qqmusic' && /^22\.(?:76|80)\./.test(entry.version);
   assert.equal(entry.minimumCoreVersion, requiresProfileCore ? '1.2.5'
     : requiresWebCore ? '1.2.1' : '1.1.10', `v2 ${id} core boundary`);
   assert.ok(entry.package, `v2 ${id} must have a package`);
@@ -87,6 +87,7 @@ assert.match(workflow, /@\('Awoo\.QqWebBridge\.exe', 'coreclr\.dll', 'hostfxr\.d
 assert.match(workflow, /if \(Test-Path -LiteralPath \(Join-Path \$frameworkOutput \$forbiddenFile\)\)/);
 assert.match(workflow, /Packaged QQ Music profile does not match source profile/);
 assert.match(workflow, /github\.ref_name != 'qqmusic-v22\.76\.1'/);
+assert.match(workflow, /github\.ref_name != 'qqmusic-v22\.80\.1'/);
 
 const temporaryDirectory = fs.mkdtempSync(
   path.join(os.tmpdir(), 'awoo-connector-catalog-v2-')
@@ -154,6 +155,8 @@ try {
     ['qqmusic', '22.71.5', 'win-x86', '1.1.10', nativeQqTestedVersions],
     ['qqmusic', '22.76.1', 'win-x86', '1.2.5', '22.71 / 22.76'],
     ['qqmusic', '22.76.2', 'win-x86', '1.2.5', '22.71 / 22.76'],
+    ['qqmusic', '22.80.1', 'win-x86', '1.2.5', '22.71 / 22.76 / 22.80'],
+    ['qqmusic', '22.80.2', 'win-x86', '1.2.5', '22.71 / 22.76 / 22.80'],
     ['netease', '3.1.38.205386.2', 'win-x64', '1.1.10'],
     ['folia', '1.1.4', 'win-x86', '1.1.10']
   ]) {
